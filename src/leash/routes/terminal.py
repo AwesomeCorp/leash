@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import logging
 from typing import Any
@@ -26,7 +27,8 @@ async def get_buffer(request: Request) -> JSONResponse:
         return JSONResponse(content=[])
 
     lines = svc.get_buffer()
-    return JSONResponse(content=lines)
+    serialized = [dataclasses.asdict(line) if dataclasses.is_dataclass(line) else line for line in lines]
+    return JSONResponse(content=serialized)
 
 
 @router.post("/api/terminal/clear")
@@ -50,13 +52,13 @@ async def stream_terminal(request: Request):
 
         queue: asyncio.Queue = asyncio.Queue()
 
-        def on_line_received(sender, line):
+        def on_line_received(line):
             try:
                 queue.put_nowait(line)
             except Exception:
                 pass
 
-        svc.line_received += on_line_received
+        svc.subscribe(on_line_received)
 
         async def event_generator():
             try:
@@ -64,8 +66,9 @@ async def stream_terminal(request: Request):
                 while True:
                     try:
                         line = await asyncio.wait_for(queue.get(), timeout=30.0)
-                        if hasattr(line, "model_dump"):
-                            data = json.dumps(line.model_dump(by_alias=True))
+                        if hasattr(line, "__dataclass_fields__"):
+                            import dataclasses
+                            data = json.dumps(dataclasses.asdict(line), default=str)
                         elif isinstance(line, dict):
                             data = json.dumps(line)
                         else:
@@ -81,7 +84,7 @@ async def stream_terminal(request: Request):
                 pass
             finally:
                 try:
-                    svc.line_received -= on_line_received
+                    svc.unsubscribe(on_line_received)
                 except Exception:
                     pass
 

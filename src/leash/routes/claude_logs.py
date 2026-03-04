@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import logging
 from typing import Any
@@ -12,6 +13,27 @@ from fastapi.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _to_camel(name: str) -> str:
+    """Convert snake_case to camelCase."""
+    parts = name.split("_")
+    return parts[0] + "".join(p.capitalize() for p in parts[1:])
+
+
+def _serialize(obj: Any) -> Any:
+    """Convert dataclass instances to camelCase dicts recursively for JSON serialization."""
+    import datetime
+
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return {_to_camel(k): _serialize(v) for k, v in dataclasses.asdict(obj).items()}
+    if isinstance(obj, list):
+        return [_serialize(item) for item in obj]
+    if isinstance(obj, dict):
+        return {k: _serialize(v) for k, v in obj.items()}
+    if isinstance(obj, datetime.datetime):
+        return obj.isoformat()
+    return obj
 
 
 def _get_transcript_watcher(request: Request) -> Any:
@@ -28,6 +50,7 @@ def _validate_session_id(session_id: str) -> str | None:
 
 
 @router.get("/api/claude-logs/projects")
+@router.get("/api/transcripts/projects")
 async def get_projects(request: Request) -> JSONResponse:
     """List available Claude projects with transcripts."""
     watcher = _get_transcript_watcher(request)
@@ -36,7 +59,7 @@ async def get_projects(request: Request) -> JSONResponse:
 
     try:
         projects = watcher.get_projects()
-        return JSONResponse(content=projects)
+        return JSONResponse(content=_serialize(projects))
     except Exception as exc:
         logger.error("Failed to list projects: %s", exc)
         return JSONResponse(status_code=500, content={"error": "Failed to list projects"})
@@ -55,7 +78,7 @@ async def get_transcript(request: Request, session_id: str) -> JSONResponse:
 
     try:
         entries = watcher.get_transcript(session_id)
-        return JSONResponse(content=entries)
+        return JSONResponse(content=_serialize(entries))
     except Exception as exc:
         logger.error("Failed to get transcript for session %s: %s", session_id, exc)
         return JSONResponse(status_code=500, content={"error": "Failed to get transcript"})

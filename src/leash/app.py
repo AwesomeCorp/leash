@@ -118,6 +118,7 @@ async def lifespan(app: FastAPI):
 
     # Transcript watcher
     transcript_watcher = TranscriptWatcher()
+    transcript_watcher.set_harness_clients([claude_client, copilot_client])
 
     # Tray services (null by default — platform-specific ones can be swapped in)
     tray_svc = NullTrayService()
