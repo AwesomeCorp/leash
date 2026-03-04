@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Session Details - Leash</title>
+    <link rel="stylesheet" href="/css/styles.css">
+    <style>
+        .viewer-toolbar {
+            display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px;
+            padding: 8px 12px; background: var(--bg-secondary, #fff); border-radius: 6px;
+            border: 1px solid var(--border-color, #e0e0e0);
+        }
+        .viewer-toolbar .btn { font-size: 0.8em; padding: 4px 10px; }
+        .toggle-btn { display: inline-flex; align-items: center; gap: 4px; font-size: 0.8em; cursor: pointer; user-select: none; color: var(--text-primary, #1a1a2e); }
+        .toggle-btn input { margin: 0; }
+        .toolbar-sep { width: 1px; height: 20px; background: var(--border-color, #ddd); margin: 0 4px; }
+        .live-indicator { display: inline-flex; align-items: center; gap: 4px; font-size: 0.8em; color: var(--color-success, #16a34a); }
+        .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-success, #16a34a); animation: pulse-live 1.5s infinite; }
+        @keyframes pulse-live { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+        .timeline { max-height: 70vh; overflow-y: auto; scroll-behavior: smooth; }
+        .timeline-filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+        .filter-chip {
+            font-size: 0.8em; padding: 4px 10px; border-radius: 12px; border: 1px solid var(--border-color, #ddd);
+            cursor: pointer; background: var(--bg-secondary, #fff); color: var(--text-primary, #1a1a2e); transition: all 0.15s;
+            user-select: none;
+        }
+        .filter-chip.active { background: var(--accent-primary, #2563eb); color: #fff; border-color: var(--accent-primary, #2563eb); }
+    </style>
+</head>
+<body>
+    <a href="#main" class="skip-link">Skip to main content</a>
+
+    <div class="container">
+        <header>
+            <div class="header-brand"><h1>Leash</h1><span class="motto">Keep Claude &amp; Copilot on a leash</span></div>
+            <div class="header-right">
+                <div class="status" role="status" aria-label="Service connection status">
+                    <span class="status-indicator" aria-hidden="true"></span>
+                    <span class="status-label">Checking...</span>
+                </div>
+                <button id="themeToggle" class="theme-toggle" aria-label="Toggle dark mode" title="Toggle dark mode (D)">&#9790;</button>
+            </div>
+        </header>
+
+        <nav aria-label="Main navigation" role="navigation">
+            <a href="/">Dashboard</a>
+            <a href="/logs.html">Live Logs</a>
+            <a href="/session.html" class="active" aria-current="page">Sessions</a>
+            <a href="/transcripts.html">Transcripts</a>
+            <a href="/prompts.html">Prompt Editor</a>
+            <a href="/config.html">Configuration</a>
+            <a href="/claude-settings.html">Claude Settings</a>
+            <a href="/copilot-settings.html">Copilot Settings</a>
+        </nav>
+
+        <main id="main">
+            <!-- Session list view (default) -->
+            <section id="sessionListView">
+                <div class="card-header">
+                    <h2>Recent Sessions</h2>
+                    <button class="btn btn-sm" onclick="loadSessionList()">Refresh</button>
+                </div>
+                <div id="sessionList" class="activity-list">
+                    <div class="empty-state">
+                        <div class="empty-state-icon">&#128270;</div>
+                        <p>Loading sessions...</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Session detail view (shown when a session is selected) -->
+            <section id="sessionDetailView" style="display:none;">
+                <div class="card-header">
+                    <h2>Session: <span id="sessionId">-</span></h2>
+                    <div style="display:flex;gap:8px;">
+                        <a class="btn btn-sm" id="linkToTranscript" href="/transcripts.html" title="View Claude transcript for this session">View Transcript</a>
+                        <button class="btn btn-sm" onclick="showSessionList()">Back to List</button>
+                    </div>
+                </div>
+                <div class="session-meta" style="margin-bottom:16px;">
+                    <span>Started: <span id="startTime">-</span></span>
+                    <span>Last Activity: <span id="lastActivity">-</span></span>
+                    <span>Working Dir: <span id="workingDir">-</span></span>
+                </div>
+
+                <div class="viewer-toolbar">
+                    <label class="toggle-btn"><input type="checkbox" id="chkAutoScroll" checked> Auto-scroll</label>
+                    <span class="toolbar-sep"></span>
+                    <label class="toggle-btn"><input type="checkbox" id="chkLiveSession" checked> Live refresh (5s)</label>
+                    <span class="live-indicator" id="liveIndicator" style="display:none;"><span class="live-dot"></span> Live</span>
+                </div>
+
+                <section class="event-timeline">
+                    <h2>Event Timeline</h2>
+                    <div class="timeline-filters" id="timelineFilters"></div>
+                    <div id="timeline" class="timeline">
+                        <p class="empty-state">Loading events...</p>
+                    </div>
+                </section>
+            </section>
+        </main>
+    </div>
+
+    <!-- Toast container -->
+    <div id="toastContainer" class="toast-container" role="status" aria-live="polite"></div>
+
+    <script src="/js/shared.js"></script>
+    <script>
+        var currentSessionId = null;
+        var currentEventCount = 0;
+        var liveRefreshInterval = null;
+        var knownEventTypes = new Set();
+        var activeEventFilters = new Set();
+
+        // --- Session List ---
+        async function loadSessionList() {
+            var list = document.getElementById('sessionList');
+            try {
+                var response = await fetch('/api/dashboard/sessions');
+                if (!response.ok) throw new Error('Failed to load sessions');
+                var sessions = await response.json();
+
+                if (!sessions || sessions.length === 0) {
+                    list.innerHTML = '<div class="empty-state"><div class="empty-state-icon">&#128270;</div><h3>No sessions found</h3><p>Sessions will appear here when hook events are processed.</p></div>';
+                    return;
+                }
+
+                list.innerHTML = sessions.filter(function(s) { return s.sessionId; }).map(function(s) {
+                    var start = new Date(s.startTime).toLocaleString();
+                    var last = new Date(s.lastActivity).toLocaleString();
+                    var events = s.eventCount || 0;
+                    return '<div class="activity-item" style="cursor:pointer;" onclick="selectSession(\'' + escapeAttr(s.sessionId) + '\')">' +
+                        '<div class="activity-header">' +
+                        '<span class="tool-name" style="font-size:0.85em;">' + escapeHtml(s.sessionId) + '</span>' +
+                        '<span class="activity-time">' + last + '</span>' +
+                        '</div>' +
+                        '<div class="activity-details">' +
+                        '<span>Started: ' + start + '</span>' +
+                        '<span style="margin-left:16px;">Events: ' + events + '</span>' +
+                        (s.workingDirectory ? '<span style="margin-left:16px;">Dir: ' + escapeHtml(s.workingDirectory) + '</span>' : '') +
+                        '</div></div>';
+                }).join('');
+            } catch (err) {
+                list.innerHTML = '<div class="empty-state"><p>Error loading sessions: ' + escapeHtml(err.message) + '</p></div>';
+            }
+        }
+
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+        }
+        function escapeAttr(str) {
+            if (!str) return '';
+            return str.replace(/'/g,"\\'").replace(/"/g,'&quot;');
+        }
+
+        // --- Session Detail ---
+        function selectSession(sessionId) {
+            window.history.replaceState(null, '', '?id=' + encodeURIComponent(sessionId));
+            showSessionDetail(sessionId);
+        }
+
+        function showSessionList() {
+            stopLiveRefresh();
+            currentSessionId = null;
+            document.getElementById('sessionListView').style.display = '';
+            document.getElementById('sessionDetailView').style.display = 'none';
+            window.history.replaceState(null, '', window.location.pathname);
+        }
+
+        async function showSessionDetail(sessionId) {
+            currentSessionId = sessionId;
+            document.getElementById('sessionListView').style.display = 'none';
+            document.getElementById('sessionDetailView').style.display = '';
+            document.getElementById('sessionId').textContent = sessionId;
+            document.getElementById('linkToTranscript').href = '/transcripts.html?session=' + encodeURIComponent(sessionId);
+            document.getElementById('timeline').innerHTML = '<p class="empty-state">Loading events...</p>';
+
+            try {
+                var response = await fetch('/api/sessions/' + encodeURIComponent(sessionId));
+                if (!response.ok) {
+                    document.getElementById('timeline').innerHTML = '<div class="empty-state"><p>Session not found in analyzer data.</p></div>';
+                    document.getElementById('startTime').textContent = '-';
+                    document.getElementById('lastActivity').textContent = '-';
+                    document.getElementById('workingDir').textContent = '-';
+                    return;
+                }
+
+                var session = await response.json();
+                document.getElementById('startTime').textContent = new Date(session.startTime).toLocaleString();
+                document.getElementById('lastActivity').textContent = new Date(session.lastActivity).toLocaleString();
+                document.getElementById('workingDir').textContent = session.workingDirectory || '-';
+                var events = session.conversationHistory || [];
+                currentEventCount = events.length;
+                renderTimeline(events);
+                autoScrollToBottom();
+
+                // Start live refresh
+                if (document.getElementById('chkLiveSession').checked) {
+                    startLiveRefresh(sessionId);
+                }
+            } catch (err) {
+                document.getElementById('timeline').innerHTML = '<div class="empty-state"><p>Error: ' + escapeHtml(err.message) + '</p></div>';
+            }
+        }
+
+        function renderTimeline(events) {
+            var timeline = document.getElementById('timeline');
+            if (events.length === 0) {
+                timeline.innerHTML = '<div class="empty-state"><p>No events in this session</p></div>';
+                return;
+            }
+
+            // Collect all event types and auto-enable them on first load
+            knownEventTypes = new Set();
+            events.forEach(function(evt) { if (evt.type) knownEventTypes.add(evt.type); });
+
+            // Restore saved event filters if they intersect with known types
+            var savedFilters = loadFilter('cpa-session-event-filters', null);
+            if (savedFilters && Array.isArray(savedFilters)) {
+                var restored = savedFilters.filter(function(t) { return knownEventTypes.has(t); });
+                activeEventFilters = restored.length > 0 ? new Set(restored) : new Set(knownEventTypes);
+            } else {
+                activeEventFilters = new Set(knownEventTypes);
+            }
+            renderTimelineFilters();
+
+            timeline.innerHTML = events.map(function(evt) {
+                return buildTimelineItemHtml(evt);
+            }).join('');
+
+            // Apply saved filters to hide non-matching items
+            applyTimelineFilters();
+        }
+
+        function renderTimelineFilters() {
+            var container = document.getElementById('timelineFilters');
+            if (!container) return;
+            var sorted = Array.from(knownEventTypes).sort();
+            container.innerHTML = sorted.map(function(t) {
+                var isActive = activeEventFilters.has(t);
+                return '<span class="filter-chip ' + (isActive ? 'active' : '') + '" data-type="' + escapeHtml(t) + '" onclick="toggleTimelineFilter(\'' + escapeHtml(t) + '\')">' + escapeHtml(t) + '</span>';
+            }).join('') + '<span class="filter-chip" onclick="toggleAllTimelineFilters()" style="font-weight:600;">Toggle All</span>';
+        }
+
+        function toggleTimelineFilter(type) {
+            if (activeEventFilters.has(type)) activeEventFilters.delete(type);
+            else activeEventFilters.add(type);
+            applyTimelineFilters();
+            renderTimelineFilters();
+            saveFilter('cpa-session-event-filters', Array.from(activeEventFilters));
+        }
+
+        function toggleAllTimelineFilters() {
+            if (activeEventFilters.size === knownEventTypes.size) {
+                activeEventFilters.clear();
+            } else {
+                activeEventFilters = new Set(knownEventTypes);
+            }
+            applyTimelineFilters();
+            renderTimelineFilters();
+            saveFilter('cpa-session-event-filters', Array.from(activeEventFilters));
+        }
+
+        function applyTimelineFilters() {
+            document.querySelectorAll('.timeline-item').forEach(function(item) {
+                item.style.display = activeEventFilters.has(item.dataset.type) ? '' : 'none';
+            });
+        }
+
+        function buildTimelineItemHtml(evt) {
+            var time = new Date(evt.timestamp).toLocaleTimeString();
+            var type = evt.type || 'unknown';
+            var cssClass = evt.decision === 'auto-approved' ? 'approved' : evt.decision === 'denied' ? 'denied' : '';
+            var icon = evt.decision === 'auto-approved' ? '&#10003;' : evt.decision === 'denied' ? '&#10007;' : evt.type === 'session-start' ? '&#9654;' : '&#8226;';
+
+            var parts = [];
+            if (evt.toolName) parts.push('<span class="detail-label">Tool:</span> ' + escapeHtml(evt.toolName));
+            if (evt.toolInput) {
+                var ti = evt.toolInput;
+                if (ti.command) parts.push('<span class="detail-label">Command:</span> <code>' + escapeHtml(ti.command) + '</code>');
+                if (ti.description) parts.push('<span class="detail-label">Description:</span> ' + escapeHtml(ti.description));
+                if (ti.file_path) parts.push('<span class="detail-label">File:</span> <code>' + escapeHtml(ti.file_path) + '</code>');
+                if (ti.pattern) parts.push('<span class="detail-label">Pattern:</span> <code>' + escapeHtml(ti.pattern) + '</code>');
+                if (ti.old_string) parts.push('<span class="detail-label">Old:</span> <code>' + escapeHtml(ti.old_string.substring(0, 200)) + (ti.old_string.length > 200 ? '...' : '') + '</code>');
+                if (ti.new_string) parts.push('<span class="detail-label">New:</span> <code>' + escapeHtml(ti.new_string.substring(0, 200)) + (ti.new_string.length > 200 ? '...' : '') + '</code>');
+                if (ti.url) parts.push('<span class="detail-label">URL:</span> <code>' + escapeHtml(ti.url) + '</code>');
+                if (ti.query) parts.push('<span class="detail-label">Query:</span> ' + escapeHtml(ti.query));
+                if (ti.prompt) parts.push('<span class="detail-label">Prompt:</span> ' + escapeHtml(ti.prompt.substring(0, 200)));
+                if (ti.content && !ti.command) parts.push('<span class="detail-label">Content:</span> ' + escapeHtml((typeof ti.content === 'string' ? ti.content : JSON.stringify(ti.content)).substring(0, 200)));
+            }
+            if (evt.decision) parts.push('<span class="detail-label">Decision:</span> ' + escapeHtml(evt.decision));
+            if (evt.safetyScore != null) parts.push('<span class="detail-label">Score:</span> ' + evt.safetyScore + (evt.threshold != null ? ' / threshold: ' + evt.threshold : ''));
+            if (evt.category) parts.push('<span class="detail-label">Category:</span> ' + escapeHtml(evt.category));
+            if (evt.handlerName) parts.push('<span class="detail-label">Handler:</span> ' + escapeHtml(evt.handlerName) + (evt.promptTemplate ? ' (' + escapeHtml(evt.promptTemplate) + ')' : ''));
+            if (evt.reasoning) parts.push('<span class="detail-label">Reasoning:</span> ' + escapeHtml(evt.reasoning));
+            if (evt.content) parts.push('<span class="detail-label">Content:</span> ' + escapeHtml(evt.content));
+            var details = parts.length > 0 ? '<div class="timeline-details">' + parts.join('<br>') + '</div>' : '';
+
+            return '<div class="timeline-item ' + cssClass + '" data-type="' + type + '">' +
+                '<div class="timeline-marker">' + icon + '</div>' +
+                '<div class="timeline-content">' +
+                '<div class="timeline-time">' + time + '</div>' +
+                '<div class="timeline-type">' + escapeHtml(type) + '</div>' +
+                details +
+                '</div></div>';
+        }
+
+        // --- Live Refresh ---
+        function startLiveRefresh(sessionId) {
+            stopLiveRefresh();
+            document.getElementById('liveIndicator').style.display = '';
+
+            liveRefreshInterval = setInterval(async function() {
+                if (!currentSessionId || currentSessionId !== sessionId) return;
+                try {
+                    var response = await fetch('/api/sessions/' + encodeURIComponent(sessionId));
+                    if (!response.ok) return;
+                    var session = await response.json();
+                    var events = session.conversationHistory || [];
+
+                    if (events.length > currentEventCount) {
+                        var timeline = document.getElementById('timeline');
+                        var newEvents = events.slice(currentEventCount);
+                        var filtersChanged = false;
+                        newEvents.forEach(function(evt) {
+                            // Register new types (auto-enable only truly new ones)
+                            if (evt.type && !knownEventTypes.has(evt.type)) {
+                                knownEventTypes.add(evt.type);
+                                activeEventFilters.add(evt.type);
+                                filtersChanged = true;
+                            }
+                            var div = document.createElement('div');
+                            div.innerHTML = buildTimelineItemHtml(evt);
+                            var child = div.firstElementChild;
+                            if (child) {
+                                // Apply current filter to new item
+                                if (!activeEventFilters.has(evt.type)) child.style.display = 'none';
+                                timeline.appendChild(child);
+                            }
+                        });
+                        if (filtersChanged) renderTimelineFilters();
+                        currentEventCount = events.length;
+                        document.getElementById('lastActivity').textContent = new Date(session.lastActivity).toLocaleString();
+                        autoScrollToBottom();
+                    }
+                } catch (e) {
+                    // Silently retry on next interval
+                }
+            }, 5000);
+        }
+
+        function stopLiveRefresh() {
+            if (liveRefreshInterval) {
+                clearInterval(liveRefreshInterval);
+                liveRefreshInterval = null;
+            }
+            var indicator = document.getElementById('liveIndicator');
+            if (indicator) indicator.style.display = 'none';
+        }
+
+        // --- Auto-scroll ---
+        function autoScrollToBottom() {
+            var chk = document.getElementById('chkAutoScroll');
+            if (!chk || !chk.checked) return;
+            var timeline = document.getElementById('timeline');
+            if (timeline) {
+                timeline.scrollTop = timeline.scrollHeight;
+            }
+        }
+
+        // Filters are now managed by renderTimelineFilters/toggleTimelineFilter/applyTimelineFilters
+
+        // --- Event handlers ---
+        document.addEventListener('DOMContentLoaded', function() {
+            // Restore checkbox states
+            var chkAutoScroll = document.getElementById('chkAutoScroll');
+            if (chkAutoScroll) chkAutoScroll.checked = loadFilter('cpa-session-autoscroll', true);
+
+            var chkLive = document.getElementById('chkLiveSession');
+            if (chkLive) {
+                chkLive.checked = loadFilter('cpa-session-live', true);
+                chkLive.addEventListener('change', function() {
+                    saveFilter('cpa-session-live', this.checked);
+                    if (this.checked && currentSessionId) {
+                        startLiveRefresh(currentSessionId);
+                    } else {
+                        stopLiveRefresh();
+                    }
+                });
+            }
+
+            if (chkAutoScroll) {
+                chkAutoScroll.addEventListener('change', function() {
+                    saveFilter('cpa-session-autoscroll', this.checked);
+                });
+            }
+
+            // Init: check URL for session ID, otherwise show list
+            var urlId = new URLSearchParams(window.location.search).get('id');
+            if (urlId) {
+                showSessionDetail(urlId);
+            } else {
+                loadSessionList();
+            }
+        });
+    </script>
+</body>
+</html>
