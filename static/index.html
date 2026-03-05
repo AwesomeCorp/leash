@@ -36,26 +36,26 @@
             <section class="profile-switcher">
                 <h2>Security Profile</h2>
                 <p style="font-size:0.85em;color:var(--text-muted);margin-bottom:12px;">Selects which threshold set is used from each hook handler's config (S/M/P values on Configuration page).</p>
-                <div class="profile-cards" id="profileCards">
-                    <div class="profile-card" data-profile="strict">
-                        <div class="profile-icon">&#x1f6e1;</div>
-                        <div class="profile-name">Strict</div>
-                        <div class="profile-desc">Uses strict thresholds</div>
-                    </div>
-                    <div class="profile-card active" data-profile="moderate">
-                        <div class="profile-icon">&#x2696;</div>
-                        <div class="profile-name">Moderate</div>
-                        <div class="profile-desc">Uses moderate thresholds</div>
-                    </div>
-                    <div class="profile-card" data-profile="permissive">
-                        <div class="profile-icon">&#x26a1;</div>
-                        <div class="profile-name">Permissive</div>
-                        <div class="profile-desc">Uses permissive thresholds</div>
-                    </div>
+                <div class="profile-cards" id="profileCards" style="grid-template-columns:repeat(5,1fr);">
                     <div class="profile-card" data-profile="trust">
                         <div class="profile-icon">&#x1f91d;</div>
                         <div class="profile-name">Trust</div>
                         <div class="profile-desc">Blocks only dangerous ops</div>
+                    </div>
+                    <div class="profile-card" data-profile="permissive">
+                        <div class="profile-icon">&#x26a1;</div>
+                        <div class="profile-name">Permissive</div>
+                        <div class="profile-desc">Low friction</div>
+                    </div>
+                    <div class="profile-card active" data-profile="moderate">
+                        <div class="profile-icon">&#x2696;</div>
+                        <div class="profile-name">Moderate</div>
+                        <div class="profile-desc">Balanced security</div>
+                    </div>
+                    <div class="profile-card" data-profile="strict">
+                        <div class="profile-icon">&#x1f6e1;</div>
+                        <div class="profile-name">Strict</div>
+                        <div class="profile-desc">High security</div>
                     </div>
                     <div class="profile-card" data-profile="lockdown">
                         <div class="profile-icon">&#x1f512;</div>
