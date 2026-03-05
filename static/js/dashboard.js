@@ -5,7 +5,7 @@
 let lastActivityCount = 0;
 
 async function refreshData() {
-    await Promise.all([loadStats(), loadTrends(), loadActivity(), checkHealth(), loadInsights(), loadAdaptiveStats(), loadHooksStatus()]);
+    await Promise.all([loadStats(), loadTrends(), loadActivity(), checkHealth(), loadInsights(), loadAdaptiveStats(), loadHooksStatus(), loadLatencyStats()]);
 }
 
 // ---- Health Check (from completeness) ----
@@ -48,6 +48,79 @@ async function loadStats() {
         cards.forEach(c => c.classList.remove('loading'));
         showErrorState('statsError', 'Failed to load statistics', error.message);
     }
+}
+
+// ---- Latency Stats ----
+async function loadLatencyStats() {
+    const container = document.getElementById('latencyContent');
+    if (!container) return;
+
+    try {
+        const data = await fetchApi('/api/dashboard/latency');
+        const o = data.overall || {};
+
+        if (!o.count) {
+            container.innerHTML = '<p style="color:var(--text-muted);">No latency data yet.</p>';
+            return;
+        }
+
+        let html = '';
+
+        // Overall stats row
+        html += '<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:12px;">';
+        html += _latencyCard('Requests', o.count, '');
+        html += _latencyCard('Avg', o.avg, 'ms');
+        html += _latencyCard('Median', o.median, 'ms');
+        html += _latencyCard('P95', o.p95, 'ms');
+        html += _latencyCard('Min', o.min, 'ms');
+        html += _latencyCard('Max', o.max, 'ms');
+        html += '</div>';
+
+        // Per-provider breakdown
+        const providers = data.byProvider || {};
+        const providerKeys = Object.keys(providers);
+        if (providerKeys.length > 0) {
+            html += '<div style="margin-bottom:8px;font-weight:600;font-size:0.9em;">By Provider</div>';
+            html += '<table style="width:100%;border-collapse:collapse;font-size:0.85em;font-family:var(--font-mono);">';
+            html += '<thead><tr style="color:var(--text-muted);text-align:left;border-bottom:1px solid var(--border-color);">' +
+                '<th style="padding:4px 8px;">Provider</th><th>Count</th><th>Avg</th><th>Median</th><th>P95</th><th>Min</th><th>Max</th></tr></thead><tbody>';
+            for (const p of providerKeys) {
+                const s = providers[p];
+                html += `<tr style="border-bottom:1px solid var(--border-color);">` +
+                    `<td style="padding:4px 8px;font-weight:600;">${escapeHtml(p)}</td>` +
+                    `<td>${s.count}</td><td>${s.avg}ms</td><td>${s.median}ms</td><td>${s.p95}ms</td><td>${s.min}ms</td><td>${s.max}ms</td></tr>`;
+            }
+            html += '</tbody></table>';
+        }
+
+        // Per-session breakdown (top sessions)
+        const sessions = data.bySessions || [];
+        if (sessions.length > 0) {
+            html += '<div style="margin:12px 0 8px;font-weight:600;font-size:0.9em;">By Session (top ' + sessions.length + ')</div>';
+            html += '<table style="width:100%;border-collapse:collapse;font-size:0.85em;font-family:var(--font-mono);">';
+            html += '<thead><tr style="color:var(--text-muted);text-align:left;border-bottom:1px solid var(--border-color);">' +
+                '<th style="padding:4px 8px;">Session</th><th>Provider</th><th>Count</th><th>Avg</th><th>Median</th><th>P95</th><th>Max</th></tr></thead><tbody>';
+            for (const s of sessions) {
+                const sid = (s.sessionId || '').substring(0, 12) + '...';
+                html += `<tr style="border-bottom:1px solid var(--border-color);">` +
+                    `<td style="padding:4px 8px;" title="${escapeHtml(s.sessionId)}">${escapeHtml(sid)}</td>` +
+                    `<td>${escapeHtml(s.provider || '')}</td>` +
+                    `<td>${s.count}</td><td>${s.avg}ms</td><td>${s.median}ms</td><td>${s.p95}ms</td><td>${s.max}ms</td></tr>`;
+            }
+            html += '</tbody></table>';
+        }
+
+        container.innerHTML = html;
+    } catch {
+        container.innerHTML = '<p style="color:var(--text-muted);">Failed to load latency data.</p>';
+    }
+}
+
+function _latencyCard(label, value, unit) {
+    return `<div style="text-align:center;padding:8px;border-radius:6px;background:var(--bg-secondary);border:1px solid var(--border-color);">
+        <div style="font-size:1.3em;font-weight:700;color:var(--text-primary);">${value}${unit}</div>
+        <div style="font-size:0.75em;color:var(--text-muted);margin-top:2px;">${label}</div>
+    </div>`;
 }
 
 // ---- Trend Chart ----

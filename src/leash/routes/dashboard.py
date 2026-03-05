@@ -69,6 +69,77 @@ async def get_stats(request: Request) -> JSONResponse:
         return JSONResponse(status_code=500, content={"error": "Failed to load dashboard statistics"})
 
 
+@router.get("/api/dashboard/latency")
+async def get_latency_stats(request: Request) -> JSONResponse:
+    """Return hook response latency statistics: overall, per provider, and per session."""
+    session_manager = _get_session_manager(request)
+    if session_manager is None:
+        return JSONResponse(content={"overall": _empty_latency(), "byProvider": {}, "bySessions": []})
+
+    try:
+        sessions = await session_manager.get_all_sessions()
+
+        all_latencies: list[int] = []
+        by_provider: dict[str, list[int]] = {}
+        session_stats: list[dict] = []
+
+        for s in sessions:
+            history = getattr(s, "conversation_history", [])
+            session_latencies: list[int] = []
+
+            for e in history:
+                ms = getattr(e, "elapsed_ms", None)
+                if ms is None or ms <= 0:
+                    continue
+                provider = getattr(e, "provider", "unknown") or "unknown"
+                all_latencies.append(ms)
+                session_latencies.append(ms)
+                by_provider.setdefault(provider, []).append(ms)
+
+            if session_latencies:
+                session_stats.append({
+                    "sessionId": getattr(s, "session_id", ""),
+                    "provider": getattr(s, "provider", None) or (
+                        getattr(history[0], "provider", "unknown") if history else "unknown"
+                    ),
+                    "count": len(session_latencies),
+                    **_calc_latency(session_latencies),
+                })
+
+        # Sort sessions by most recent activity (most events = likely most recent)
+        session_stats.sort(key=lambda x: x["count"], reverse=True)
+
+        return JSONResponse(content={
+            "overall": {**_calc_latency(all_latencies), "count": len(all_latencies)},
+            "byProvider": {
+                p: {**_calc_latency(lats), "count": len(lats)}
+                for p, lats in by_provider.items()
+            },
+            "bySessions": session_stats[:20],  # Top 20 sessions
+        })
+    except Exception as exc:
+        logger.error("Failed to compute latency stats: %s", exc)
+        return JSONResponse(status_code=500, content={"error": "Failed to compute latency stats"})
+
+
+def _empty_latency() -> dict:
+    return {"min": 0, "max": 0, "avg": 0, "median": 0, "p95": 0, "count": 0}
+
+
+def _calc_latency(values: list[int]) -> dict:
+    if not values:
+        return {"min": 0, "max": 0, "avg": 0, "median": 0, "p95": 0}
+    s = sorted(values)
+    n = len(s)
+    return {
+        "min": s[0],
+        "max": s[-1],
+        "avg": round(sum(s) / n),
+        "median": s[n // 2],
+        "p95": s[min(int(n * 0.95), n - 1)],
+    }
+
+
 @router.get("/api/dashboard/sessions")
 async def get_sessions(request: Request) -> JSONResponse:
     """Return session list with event counts."""
