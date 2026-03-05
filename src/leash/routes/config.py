@@ -76,6 +76,42 @@ async def update_config(request: Request) -> JSONResponse:
         return JSONResponse(status_code=500, content={"error": "Failed to update configuration"})
 
 
+@router.get("/api/config/analyze-in-observe")
+async def get_analyze_in_observe(request: Request) -> JSONResponse:
+    """Return whether LLM analysis is enabled in observe mode."""
+    config_manager = _get_config_manager(request)
+    if config_manager is None:
+        return JSONResponse(status_code=503, content={"error": "Configuration manager not available"})
+    config = config_manager.get_configuration()
+    return JSONResponse(content={"analyzeInObserveMode": config.analyze_in_observe_mode})
+
+
+@router.put("/api/config/analyze-in-observe")
+async def set_analyze_in_observe(request: Request) -> JSONResponse:
+    """Toggle LLM analysis in observe mode."""
+    config_manager = _get_config_manager(request)
+    if config_manager is None:
+        return JSONResponse(status_code=503, content={"error": "Configuration manager not available"})
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "Invalid JSON body"})
+
+    enabled = body.get("analyzeInObserveMode")
+    if not isinstance(enabled, bool):
+        return JSONResponse(status_code=400, content={"error": "analyzeInObserveMode must be a boolean"})
+
+    try:
+        config = config_manager.get_configuration()
+        config.analyze_in_observe_mode = enabled
+        await config_manager.update(config)
+        return JSONResponse(content={"analyzeInObserveMode": enabled})
+    except Exception as exc:
+        logger.error("Failed to update analyze_in_observe_mode: %s", exc)
+        return JSONResponse(status_code=500, content={"error": "Failed to update setting"})
+
+
 @router.get("/api/config/handlers/{hook_event_name}")
 async def get_handlers(request: Request, hook_event_name: str) -> JSONResponse:
     """Return handlers for a specific hook event."""

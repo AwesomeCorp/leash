@@ -16,6 +16,7 @@ from leash.services.llm_client_base import LLMClientBase
 if TYPE_CHECKING:
     from leash.config import ConfigurationManager
     from leash.models.configuration import LlmConfig
+    from leash.services.terminal_output_service import TerminalOutputService
 
 logger = logging.getLogger(__name__)
 
@@ -76,8 +77,9 @@ class CopilotCliClient(LLMClientBase):
         self,
         config: LlmConfig,
         config_manager: ConfigurationManager | None = None,
+        terminal_output: TerminalOutputService | None = None,
     ) -> None:
-        super().__init__(config_manager=config_manager, initial_config=config)
+        super().__init__(config_manager=config_manager, initial_config=config, terminal_output=terminal_output)
         if config is None:
             raise ValueError("config is required")
         self._config = config
@@ -106,6 +108,9 @@ class CopilotCliClient(LLMClientBase):
     async def query(self, prompt: str) -> LLMResponse:
         """Send a prompt to the Copilot CLI and return a structured response."""
         timeout = self.current_timeout
+        cmd, _ = self._get_command()
+        self._push_terminal("copilot-cli", "info", f"Querying {cmd} ({len(prompt)} chars, timeout: {timeout}ms)")
+        self._push_terminal("copilot-cli", "stdout", f"Prompt: {self.preview_prompt(prompt)}")
         total_start = time.monotonic()
 
         for attempt in range(1, _MAX_RETRIES + 1):
@@ -116,6 +121,7 @@ class CopilotCliClient(LLMClientBase):
 
                 response = parse_text_response(output)
                 response.elapsed_ms = elapsed_ms
+                self._push_terminal("copilot-cli", "info", f"Completed in {elapsed_ms}ms (score={response.safety_score})")
                 logger.info("Copilot CLI query completed in %dms", elapsed_ms)
                 return response
 
@@ -140,6 +146,7 @@ class CopilotCliClient(LLMClientBase):
 
             except FileNotFoundError:
                 cmd, _ = self._get_command()
+                self._push_terminal("copilot-cli", "stderr", f"CLI command '{cmd}' not found in PATH")
                 return self.create_failure_response(
                     f"CLI command '{cmd}' not found - ensure it is installed and in PATH",
                     f"CLI command '{cmd}' is not installed or not in PATH",
@@ -179,7 +186,7 @@ class CopilotCliClient(LLMClientBase):
         for key in _NESTING_ENV_VARS:
             env.pop(key, None)
 
-        result = await run_cli(file_name, args, timeout_ms, "copilot-cli", env=env)
+        result = await run_cli(file_name, args, timeout_ms, "copilot-cli", env=env, terminal_output=self._terminal_output)
         return result.output
 
 

@@ -424,6 +424,12 @@ function updateEnforcementModeUI(mode) {
         var fillPct = { 'observe': '0', 'approve-only': '50', 'enforce': '100' };
         fill.style.width = (fillPct[mode] || '0') + '%';
     }
+
+    // Show/hide "LLM analysis" toggle under observe mode
+    var analyzeToggle = document.getElementById('observeAnalyzeToggle');
+    if (analyzeToggle) {
+        analyzeToggle.style.display = (mode === 'observe') ? '' : 'none';
+    }
 }
 
 function initEnforcementModeCards() {
@@ -535,12 +541,45 @@ function initHooksControls() {
 // ---- Auto-refresh ----
 let refreshInterval;
 
+function initAnalyzeInObserveToggle() {
+    var chk = document.getElementById('chkAnalyzeInObserve');
+    if (!chk) return;
+
+    // Load initial state
+    fetchApi('/api/config/analyze-in-observe')
+        .then(function (data) {
+            chk.checked = data.analyzeInObserveMode !== false;
+        })
+        .catch(function () {});
+
+    // Prevent click on the checkbox from toggling the enforcement mode card
+    chk.addEventListener('click', function (e) { e.stopPropagation(); });
+    var label = document.getElementById('observeAnalyzeToggle');
+    if (label) label.addEventListener('click', function (e) { e.stopPropagation(); });
+
+    chk.addEventListener('change', function () {
+        var enabled = this.checked;
+        fetchApi('/api/config/analyze-in-observe', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ analyzeInObserveMode: enabled }),
+        })
+            .then(function () {
+                Toast.show('Observe Mode', enabled ? 'LLM analysis enabled' : 'LLM analysis disabled (log-only)', 'success');
+            })
+            .catch(function (err) {
+                Toast.show('Error', 'Failed: ' + err.message, 'danger');
+            });
+    });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     // Initialize creative features
     initProfileSwitcher();
     initQuickActions();
     initHooksControls();
     initEnforcementModeCards();
+    initAnalyzeInObserveToggle();
 
     // Load all data
     refreshData();

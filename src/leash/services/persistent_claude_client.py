@@ -19,6 +19,7 @@ from leash.services.llm_client_base import LLMClientBase
 if TYPE_CHECKING:
     from leash.config import ConfigurationManager
     from leash.models.configuration import LlmConfig
+    from leash.services.terminal_output_service import TerminalOutputService
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +38,9 @@ class PersistentClaudeClient(LLMClientBase):
         self,
         config: LlmConfig,
         config_manager: ConfigurationManager | None = None,
+        terminal_output: TerminalOutputService | None = None,
     ) -> None:
-        super().__init__(config_manager=config_manager, initial_config=config)
+        super().__init__(config_manager=config_manager, initial_config=config, terminal_output=terminal_output)
         if config is None:
             raise ValueError("config is required")
         self._config = config
@@ -46,7 +48,7 @@ class PersistentClaudeClient(LLMClientBase):
         self._lock = asyncio.Lock()
         self._consecutive_failures = 0
         self._disposed = False
-        self._fallback_client = ClaudeCliClient(config, config_manager=config_manager)
+        self._fallback_client = ClaudeCliClient(config, config_manager=config_manager, terminal_output=terminal_output)
         self._stderr_task: asyncio.Task[None] | None = None
 
     async def query(self, prompt: str) -> LLMResponse:
@@ -75,6 +77,8 @@ class PersistentClaudeClient(LLMClientBase):
                 return None
 
             timeout = self.current_timeout
+            self._push_terminal("persistent-claude", "info", f"Sending prompt ({len(prompt)} chars, timeout: {timeout}ms)")
+            self._push_terminal("persistent-claude", "stdout", f"Prompt: {self.preview_prompt(prompt)}")
             logger.info(
                 "Sending prompt to persistent process (%d chars, timeout: %dms): %s",
                 len(prompt),
@@ -128,6 +132,7 @@ class PersistentClaudeClient(LLMClientBase):
                     elif msg_type == "result":
                         got_result = True
                         elapsed_ms = int((time.monotonic() - start) * 1000)
+                        self._push_terminal("persistent-claude", "info", f"Result received in {elapsed_ms}ms")
                         logger.info("Persistent process result received in %dms", elapsed_ms)
                         break
 
@@ -149,6 +154,7 @@ class PersistentClaudeClient(LLMClientBase):
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            self._push_terminal("persistent-claude", "stderr", f"Query failed: {exc}")
             logger.error("Persistent Claude query failed: %s", exc)
             self._increment_failures_and_maybe_kill()
             return None
@@ -225,9 +231,8 @@ class PersistentClaudeClient(LLMClientBase):
             await self._kill_process()
             return False
 
-    @staticmethod
-    async def _consume_stderr(proc: asyncio.subprocess.Process) -> None:
-        """Read and log stderr from the persistent process."""
+    async def _consume_stderr(self, proc: asyncio.subprocess.Process) -> None:
+        """Read stderr from the persistent process, forwarding lines to terminal output and debug log."""
         if proc.stderr is None:
             return
         try:
@@ -237,9 +242,12 @@ class PersistentClaudeClient(LLMClientBase):
                     break
                 line = line_bytes.decode("utf-8", errors="replace").strip()
                 if line:
+                    self._push_terminal("persistent-claude", "stderr", line)
                     logger.debug("[persistent-claude stderr] %s", line)
+        except asyncio.CancelledError:
+            pass  # Expected during shutdown
         except Exception:
-            pass
+            logger.debug("Stderr consumer for persistent process ended unexpectedly", exc_info=True)
 
     def _increment_failures_and_maybe_kill(self) -> None:
         """Increment consecutive failure counter and kill process if threshold reached."""
@@ -256,9 +264,17 @@ class PersistentClaudeClient(LLMClientBase):
         if proc is not None:
             try:
                 if proc.returncode is None:
-                    logger.info("Killing persistent process (PID: %s)", proc.pid)
-                    proc.kill()
-                    await proc.wait()
+                    logger.info("Terminating persistent process (PID: %s)", proc.pid)
+                    proc.terminate()
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=2.0)
+                    except asyncio.TimeoutError:
+                        logger.warning("Process did not exit after terminate, killing (PID: %s)", proc.pid)
+                        proc.kill()
+                        try:
+                            await asyncio.wait_for(proc.wait(), timeout=2.0)
+                        except asyncio.TimeoutError:
+                            logger.warning("Process did not exit after kill (PID: %s)", proc.pid)
             except ProcessLookupError:
                 pass
             except Exception as exc:

@@ -115,7 +115,7 @@ class TrayConfig(BaseModel):
 
     enabled: bool = True
     alert_on_denied: bool = True
-    alert_on_uncertain: bool = True
+    alert_on_uncertain: bool = False
     interactive_enabled: bool = True
     interactive_timeout_seconds: int = 10
     interactive_score_min: int = 30

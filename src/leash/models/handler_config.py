@@ -18,6 +18,7 @@ class HandlerConfig(BaseModel):
     model_config = {"alias_generator": to_camel, "populate_by_name": True}
 
     name: str = ""
+    enabled: bool = True
     matcher: str | None = None
     mode: str = "log-only"
     prompt_template: str | None = None

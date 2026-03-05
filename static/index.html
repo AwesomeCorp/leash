@@ -11,7 +11,7 @@
 
     <div class="container">
         <header>
-            <div class="header-brand"><h1>Leash</h1><span class="motto">Keep Claude &amp; Copilot on a leash</span></div>
+            <div class="header-brand"><h1>Leash</h1><span class="motto">Leash the Harness</span></div>
             <div class="header-right">
                 <div class="status" role="status" aria-label="Service connection status">
                     <span class="status-indicator" aria-hidden="true"></span>
@@ -24,7 +24,6 @@
         <nav aria-label="Main navigation" role="navigation">
             <a href="/" class="active" aria-current="page">Dashboard</a>
             <a href="/logs.html">Live Logs</a>
-            <a href="/session.html">Sessions</a>
             <a href="/transcripts.html">Transcripts</a>
             <a href="/prompts.html">Prompt Editor</a>
             <a href="/config.html">Configuration</a>
@@ -72,6 +71,9 @@
                             <div class="enforcement-mode-icon">&#x1f441;</div>
                             <div class="enforcement-mode-name">Observe</div>
                             <div class="enforcement-mode-desc">Log only &mdash; no decisions. Claude asks the user as normal.</div>
+                            <label id="observeAnalyzeToggle" class="observe-analyze-toggle" style="display:none;margin-top:6px;font-size:0.8em;cursor:pointer;user-select:none;color:var(--text-secondary,#555);">
+                                <input type="checkbox" id="chkAnalyzeInObserve" checked> LLM analysis
+                            </label>
                         </div>
                         <div class="enforcement-mode-card" data-mode="approve-only" id="modeApproveOnly">
                             <div class="enforcement-mode-indicator"></div>

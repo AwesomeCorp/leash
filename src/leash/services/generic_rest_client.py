@@ -16,6 +16,7 @@ from leash.services.llm_client_base import LLMClientBase
 
 if TYPE_CHECKING:
     from leash.config import ConfigurationManager
+    from leash.services.terminal_output_service import TerminalOutputService
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +37,9 @@ class GenericRestClient(LLMClientBase):
         self,
         http_client: httpx.AsyncClient,
         config_manager: ConfigurationManager,
+        terminal_output: TerminalOutputService | None = None,
     ) -> None:
-        super().__init__(config_manager=config_manager)
+        super().__init__(config_manager=config_manager, terminal_output=terminal_output)
         if http_client is None:
             raise ValueError("http_client is required")
         if config_manager is None:
@@ -69,6 +71,8 @@ class GenericRestClient(LLMClientBase):
                 prompt_value = escaped_prompt[1:-1]
                 body = (rest_config.body_template or "").replace("{PROMPT}", prompt_value)
 
+                self._push_terminal("generic-rest", "info", f"POST {rest_config.url} ({len(prompt)} chars)")
+                self._push_terminal("generic-rest", "stdout", f"Prompt: {self.preview_prompt(prompt)}")
                 logger.info(
                     "POST %s (%d chars): %s",
                     rest_config.url,
@@ -106,6 +110,7 @@ class GenericRestClient(LLMClientBase):
 
                 if response.status_code >= 400:
                     preview = response_body[:500] if len(response_body) > 500 else response_body
+                    self._push_terminal("generic-rest", "stderr", f"API error {response.status_code}: {preview[:200]}")
                     logger.error("REST API error %d: %s", response.status_code, preview)
                     return self.create_failure_response(
                         f"REST API returned {response.status_code}",
@@ -115,6 +120,7 @@ class GenericRestClient(LLMClientBase):
 
                 # Extract text using configured response path
                 text = extract_by_path(response_body, rest_config.response_path)
+                self._push_terminal("generic-rest", "info", f"Response received in {elapsed_ms}ms ({len(text)} chars)")
                 logger.info("Generic REST response received in %dms (%d chars)", elapsed_ms, len(text))
 
                 # Parse the safety analysis JSON from the text

@@ -1,0 +1,139 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-amd64
+            artifact: leash-linux-amd64.tar.gz
+          - os: macos-13
+            target: macos-amd64
+            artifact: leash-macos-amd64.tar.gz
+          - os: macos-latest
+            target: macos-arm64
+            artifact: leash-macos-arm64.tar.gz
+          - os: windows-latest
+            target: windows-amd64
+            artifact: leash-windows-amd64.zip
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Run tests
+        run: uv run pytest -v
+
+      - name: Install PyInstaller
+        run: uv pip install pyinstaller
+
+      - name: Build binary
+        run: |
+          uv run pyinstaller \
+            --name leash \
+            --onefile \
+            --add-data "static:static" \
+            --add-data "prompts:prompts" \
+            --hidden-import leash.routes.adaptive_threshold \
+            --hidden-import leash.routes.audit_report \
+            --hidden-import leash.routes.claude_hook \
+            --hidden-import leash.routes.claude_logs \
+            --hidden-import leash.routes.claude_settings \
+            --hidden-import leash.routes.config \
+            --hidden-import leash.routes.copilot_hook \
+            --hidden-import leash.routes.copilot_settings \
+            --hidden-import leash.routes.dashboard \
+            --hidden-import leash.routes.debug \
+            --hidden-import leash.routes.health \
+            --hidden-import leash.routes.hooks \
+            --hidden-import leash.routes.insights \
+            --hidden-import leash.routes.logs \
+            --hidden-import leash.routes.profile \
+            --hidden-import leash.routes.prompts \
+            --hidden-import leash.routes.quick_actions \
+            --hidden-import leash.routes.sessions \
+            --hidden-import leash.routes.terminal \
+            --hidden-import leash.routes.tray \
+            src/leash/__main__.py
+        shell: bash
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cd dist
+          tar czf ${{ matrix.artifact }} leash
+          mv ${{ matrix.artifact }} ..
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cd dist
+          Compress-Archive -Path leash.exe -DestinationPath ..\${{ matrix.artifact }}
+        shell: pwsh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ matrix.artifact }}
+
+  publish-pypi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Build package
+        run: uv build
+
+      - name: Upload sdist and wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package
+          path: dist/*
+
+  release:
+    needs: [build, publish-pypi]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/linux-amd64/*
+            artifacts/macos-amd64/*
+            artifacts/macos-arm64/*
+            artifacts/windows-amd64/*
+            artifacts/python-package/*

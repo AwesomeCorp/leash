@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from leash.config import ConfigurationManager
     from leash.models.configuration import LlmConfig
     from leash.services.llm_client import LLMClient
+    from leash.services.terminal_output_service import TerminalOutputService
 
 logger = logging.getLogger(__name__)
 
@@ -57,11 +58,13 @@ class LLMClientProvider:
         self,
         config_manager: ConfigurationManager,
         http_client: httpx.AsyncClient | None = None,
+        terminal_output: TerminalOutputService | None = None,
     ) -> None:
         if config_manager is None:
             raise ValueError("config_manager is required")
         self._config_manager = config_manager
         self._http_client = http_client
+        self._terminal_output = terminal_output
 
         self._lock = asyncio.Lock()
         self._cached_client: LLMClient | None = None
@@ -90,30 +93,35 @@ class LLMClientProvider:
         return AnthropicApiClient(  # type: ignore[return-value]
             http_client=self._get_or_create_http_client(),
             config_manager=self._config_manager,
+            terminal_output=self._terminal_output,
         )
 
     def _create_claude_cli_client(self, config: LlmConfig) -> LLMClient:
         return ClaudeCliClient(  # type: ignore[return-value]
             config=config,
             config_manager=self._config_manager,
+            terminal_output=self._terminal_output,
         )
 
     def _create_persistent_claude_client(self, config: LlmConfig) -> LLMClient:
         return PersistentClaudeClient(  # type: ignore[return-value]
             config=config,
             config_manager=self._config_manager,
+            terminal_output=self._terminal_output,
         )
 
     def _create_copilot_cli_client(self, config: LlmConfig) -> LLMClient:
         return CopilotCliClient(  # type: ignore[return-value]
             config=config,
             config_manager=self._config_manager,
+            terminal_output=self._terminal_output,
         )
 
     def _create_generic_rest_client(self, _config: LlmConfig) -> LLMClient:
         return GenericRestClient(  # type: ignore[return-value]
             http_client=self._get_or_create_http_client(),
             config_manager=self._config_manager,
+            terminal_output=self._terminal_output,
         )
 
     async def query(self, prompt: str) -> LLMResponse:
@@ -188,6 +196,7 @@ class LLMClientProvider:
             client: LLMClient = PersistentClaudeClient(  # type: ignore[assignment]
                 config=config,
                 config_manager=self._config_manager,
+                terminal_output=self._terminal_output,
             )
             self._session_clients[session_id] = _SessionClientEntry(client)
             logger.info("Created per-session persistent client for session %s", session_id)

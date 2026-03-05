@@ -27,7 +27,7 @@ class HookHandlerFactory:
         self._prompt_template_service = prompt_template_service
         self._session_manager = session_manager
 
-    def create(
+    async def create(
         self,
         mode: str,
         prompt_template_name: str | None = None,
@@ -41,7 +41,7 @@ class HookHandlerFactory:
             session_id: Optional session ID for LLM client selection.
 
         Returns:
-            An IHookHandler instance.
+            A HookHandler instance.
 
         Raises:
             ValueError: If the mode is not supported.
@@ -59,7 +59,7 @@ class HookHandlerFactory:
         # Get LLM client for this session
         llm_client = None
         if self._llm_client_provider:
-            llm_client = self._llm_client_provider.get_client_for_session(session_id)
+            llm_client = await self._llm_client_provider.get_client_for_session(session_id)
 
         if mode in ("llm-analysis", "llm-validation"):
             return LLMAnalysisHandler(llm_client=llm_client, prompt_template=prompt_template)

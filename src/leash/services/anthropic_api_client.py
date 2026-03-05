@@ -16,6 +16,7 @@ from leash.services.llm_client_base import LLMClientBase
 
 if TYPE_CHECKING:
     from leash.config import ConfigurationManager
+    from leash.services.terminal_output_service import TerminalOutputService
 
 logger = logging.getLogger(__name__)
 
@@ -42,8 +43,9 @@ class AnthropicApiClient(LLMClientBase):
         self,
         http_client: httpx.AsyncClient,
         config_manager: ConfigurationManager,
+        terminal_output: TerminalOutputService | None = None,
     ) -> None:
-        super().__init__(config_manager=config_manager)
+        super().__init__(config_manager=config_manager, terminal_output=terminal_output)
         if http_client is None:
             raise ValueError("http_client is required")
         if config_manager is None:
@@ -87,6 +89,8 @@ class AnthropicApiClient(LLMClientBase):
                 model = self._map_model(config.llm.model or "sonnet")
 
                 request_body = _build_request_body(model, config.llm.system_prompt, prompt)
+                self._push_terminal("anthropic-api", "info", f"POST {base_url}/v1/messages (model: {model}, {len(prompt)} chars)")
+                self._push_terminal("anthropic-api", "stdout", f"Prompt: {self.preview_prompt(prompt)}")
                 logger.info(
                     "POST %s/v1/messages (model: %s, %d chars): %s",
                     base_url,
@@ -126,6 +130,7 @@ class AnthropicApiClient(LLMClientBase):
 
                 if response.status_code >= 400:
                     preview = response_body[:500] if len(response_body) > 500 else response_body
+                    self._push_terminal("anthropic-api", "stderr", f"API error {response.status_code}: {preview[:200]}")
                     logger.error("Anthropic API error %d: %s", response.status_code, preview)
                     return self.create_failure_response(
                         f"Anthropic API returned {response.status_code}: {response_body[:200]}",
@@ -135,6 +140,7 @@ class AnthropicApiClient(LLMClientBase):
 
                 # Extract text from Anthropic response
                 text = _extract_text_from_response(response_body)
+                self._push_terminal("anthropic-api", "info", f"Response received in {elapsed_ms}ms ({len(text)} chars)")
                 logger.info("Anthropic API response received in %dms (%d chars)", elapsed_ms, len(text))
 
                 # Parse the safety analysis JSON from the LLM text

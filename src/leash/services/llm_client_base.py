@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from leash.models.llm_response import LLMResponse
 
 if TYPE_CHECKING:
     from leash.config import ConfigurationManager
     from leash.models.configuration import LlmConfig
+    from leash.services.terminal_output_service import TerminalOutputService
 
 logger = logging.getLogger(__name__)
 
@@ -20,16 +21,27 @@ MAX_OUTPUT_SIZE = 1_048_576  # 1MB
 class LLMClientBase:
     """Shared infrastructure for all LLM client implementations.
 
-    Provides timeout resolution, error response factories, and prompt preview helpers.
+    Provides timeout resolution, error response factories, prompt preview helpers,
+    and optional terminal output forwarding.
     """
 
     def __init__(
         self,
         config_manager: ConfigurationManager | None = None,
         initial_config: LlmConfig | None = None,
+        terminal_output: TerminalOutputService | None = None,
     ) -> None:
         self._config_manager = config_manager
         self._initial_config = initial_config
+        self._terminal_output = terminal_output
+
+    def _push_terminal(self, source: str, level: str, text: str) -> None:
+        """Push a line to the terminal output service if available."""
+        if self._terminal_output is not None:
+            try:
+                self._terminal_output.push(source, level, text)
+            except Exception:
+                logger.debug("Failed to push terminal output for %s", source, exc_info=True)
 
     @property
     def current_timeout(self) -> int:

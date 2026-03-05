@@ -22,6 +22,9 @@ class NullTrayService:
     def update_status(self, status: str) -> None:
         pass
 
+    def stop(self) -> None:
+        pass
+
 
 class NullNotificationService:
     """No-op notification service.

@@ -249,7 +249,7 @@ function buildLogEntryHtml(log, i) {
                 </div>` : ''}
                 <div class="detail-section">
                     <div class="detail-label">Session</div>
-                    <a href="/session.html?id=${encodeURIComponent(log.sessionId)}" class="detail-link">${escapeHtml(log.sessionId)}</a>
+                    <a href="/transcripts.html?session=${encodeURIComponent(log.sessionId)}" class="detail-link">${escapeHtml(log.sessionId)}</a>
                 </div>
                 <div class="detail-section detail-actions">
                     <button class="btn-replay" onclick="replayLogEntry(this)"

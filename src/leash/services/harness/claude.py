@@ -87,12 +87,25 @@ class ClaudeHarnessClient:
         try:
             for entry in os.scandir(self._transcript_dir):
                 if entry.is_dir():
+                    sessions = self.get_sessions_for_project(entry.path)
+                    # Derive CWD from the most recent session's JSONL metadata
+                    cwd = None
+                    branch = None
+                    for s in sessions:
+                        if s.cwd and not cwd:
+                            cwd = s.cwd
+                        if s.branch and not branch:
+                            branch = s.branch
+                        if cwd and branch:
+                            break
                     projects.append(
                         ClaudeProject(
                             name=entry.name,
                             path=entry.path,
                             provider=self.name,
-                            sessions=self.get_sessions_for_project(entry.path),
+                            cwd=cwd,
+                            branch=branch,
+                            sessions=sessions,
                         )
                     )
         except OSError:
@@ -105,15 +118,36 @@ class ClaudeHarnessClient:
             for entry in os.scandir(project_path):
                 if entry.is_file() and entry.name.endswith(".jsonl"):
                     stat = entry.stat()
-                    sessions.append(
-                        ClaudeSession(
-                            session_id=Path(entry.name).stem,
-                            file_path=entry.path,
-                            last_modified=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
-                            size_bytes=stat.st_size,
-                            provider=self.name,
-                        )
+                    session = ClaudeSession(
+                        session_id=Path(entry.name).stem,
+                        file_path=entry.path,
+                        last_modified=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
+                        size_bytes=stat.st_size,
+                        provider=self.name,
                     )
+                    self._read_session_metadata(entry.path, session)
+                    sessions.append(session)
+
+                # Scan for subagent transcripts in {session-id}/subagents/
+                if entry.is_dir():
+                    subagents_dir = os.path.join(entry.path, "subagents")
+                    if os.path.isdir(subagents_dir):
+                        try:
+                            for sub_entry in os.scandir(subagents_dir):
+                                if sub_entry.is_file() and sub_entry.name.endswith(".jsonl"):
+                                    sub_stat = sub_entry.stat()
+                                    sub_session = ClaudeSession(
+                                        session_id=Path(sub_entry.name).stem,
+                                        file_path=sub_entry.path,
+                                        last_modified=datetime.fromtimestamp(sub_stat.st_mtime, tz=timezone.utc),
+                                        size_bytes=sub_stat.st_size,
+                                        provider=self.name,
+                                        parent_session_id=entry.name,
+                                    )
+                                    self._read_session_metadata(sub_entry.path, sub_session)
+                                    sessions.append(sub_session)
+                        except OSError:
+                            pass
         except OSError:
             pass
         sessions.sort(key=lambda s: s.last_modified, reverse=True)
@@ -122,17 +156,57 @@ class ClaudeHarnessClient:
     def find_transcript_file(self, session_id: str) -> str | None:
         if not os.path.isdir(self._transcript_dir):
             return None
+        sid_lower = session_id.lower()
         try:
             for project_entry in os.scandir(self._transcript_dir):
                 if not project_entry.is_dir():
                     continue
                 for file_entry in os.scandir(project_entry.path):
+                    # Top-level JSONL files
                     if file_entry.is_file() and file_entry.name.endswith(".jsonl"):
-                        if Path(file_entry.name).stem.lower() == session_id.lower():
+                        if Path(file_entry.name).stem.lower() == sid_lower:
                             return file_entry.path
+                    # Subagent directories: {session-id}/subagents/*.jsonl
+                    if file_entry.is_dir():
+                        subagents_dir = os.path.join(file_entry.path, "subagents")
+                        if os.path.isdir(subagents_dir):
+                            try:
+                                for sub_entry in os.scandir(subagents_dir):
+                                    if sub_entry.is_file() and sub_entry.name.endswith(".jsonl"):
+                                        if Path(sub_entry.name).stem.lower() == sid_lower:
+                                            return sub_entry.path
+                            except OSError:
+                                pass
         except OSError:
             pass
         return None
+
+    @staticmethod
+    def _read_session_metadata(file_path: str, session: ClaudeSession) -> None:
+        """Read the first few lines of a Claude JSONL to extract session metadata."""
+        try:
+            with open(file_path, encoding="utf-8") as f:
+                for _ in range(5):
+                    line = f.readline().strip()
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if "cwd" in data and not session.cwd:
+                        session.cwd = data["cwd"]
+                    if "gitBranch" in data and not session.branch:
+                        session.branch = data["gitBranch"]
+                    if "agentId" in data and not session.agent_id:
+                        session.agent_id = data["agentId"]
+                    if "slug" in data and not session.slug:
+                        session.slug = data["slug"]
+                    # Stop early if we have the key fields
+                    if session.cwd and session.branch:
+                        break
+        except Exception:
+            pass
 
     def parse_transcript_line(self, json_line: str) -> TranscriptEntry | None:
         """Parse a Claude JSONL line into a TranscriptEntry."""

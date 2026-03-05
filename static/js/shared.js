@@ -346,7 +346,7 @@ const SimpleMarkdown = {
 const TerminalPanel = {
     STORAGE_KEY: 'cpa-terminal-open',
     HEIGHT_KEY: 'cpa-terminal-height',
-    MAX_LINES: 1000,
+    MAX_LINES: 2000,
     MIN_HEIGHT: 120,
     MAX_HEIGHT_RATIO: 0.6,
     panel: null,
@@ -354,6 +354,7 @@ const TerminalPanel = {
     eventSource: null,
     autoScroll: true,
     resizing: false,
+    _lastSeqId: 0,
 
     init() {
         // Inject bottom panel DOM
@@ -482,6 +483,9 @@ const TerminalPanel = {
     },
 
     connect() {
+        // Disconnect existing SSE first to avoid duplicates on reconnect
+        this.disconnect();
+
         // Fetch existing buffer first
         fetch('/api/terminal/buffer')
             .then(r => r.json())
@@ -489,18 +493,28 @@ const TerminalPanel = {
                 if (lines && lines.length > 0) {
                     const empty = this.outputEl.querySelector('.terminal-empty');
                     if (empty) empty.remove();
-                    lines.forEach(line => this.appendLine(line));
+                    lines.forEach(line => {
+                        const seqId = line.sequence_id || 0;
+                        if (seqId > this._lastSeqId) {
+                            this._lastSeqId = seqId;
+                            this.appendLine(line);
+                        }
+                    });
                 }
             })
-            .catch(() => { /* ignore buffer fetch errors */ });
+            .catch((err) => { console.warn('Terminal buffer fetch failed:', err); });
 
         // Connect SSE for live updates
         this.eventSource = new EventSource('/api/terminal/stream');
         this.eventSource.onmessage = (event) => {
             try {
                 const line = JSON.parse(event.data);
-                this.appendLine(line);
-            } catch { /* ignore parse errors */ }
+                const seqId = line.sequence_id || 0;
+                if (seqId > this._lastSeqId) {
+                    this._lastSeqId = seqId;
+                    this.appendLine(line);
+                }
+            } catch (err) { console.warn('Terminal SSE parse error:', err); }
         };
         this.eventSource.onerror = () => {
             if (this.eventSource) {
@@ -553,6 +567,7 @@ const TerminalPanel = {
         fetch('/api/terminal/clear', { method: 'POST' })
             .then(() => {
                 this.outputEl.innerHTML = '<div class="terminal-empty">No subprocess output yet</div>';
+                this._lastSeqId = 0;
             })
             .catch(() => Toast.show('Error', 'Failed to clear terminal', 'danger'));
     },

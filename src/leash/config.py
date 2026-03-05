@@ -114,6 +114,7 @@ def create_default_configuration() -> Configuration:
                 handlers=[
                     HandlerConfig(
                         name="post-tool-validator",
+                        enabled=False,
                         matcher="Write|Edit",
                         mode="llm-analysis",
                         prompt_template=f"{pd}/post-tool-validation-prompt.txt",
@@ -127,11 +128,13 @@ def create_default_configuration() -> Configuration:
                 handlers=[
                     HandlerConfig(
                         name="failure-analyzer",
+                        enabled=False,
                         matcher="*",
                         mode="llm-analysis",
                         prompt_template=f"{pd}/failure-analysis-prompt.txt",
                         config={"suggestFixes": True},
                     ),
+                    HandlerConfig(name="failure-logger", matcher="*", mode="log-only"),
                 ],
             ),
             "UserPromptSubmit": HookEventConfig(
@@ -209,7 +212,7 @@ class ConfigurationManager:
     def get_handlers_for_hook(self, hook_event_name: str) -> list[HandlerConfig]:
         hook_config = self._configuration.hook_handlers.get(hook_event_name)
         if hook_config and hook_config.enabled:
-            return hook_config.handlers
+            return [h for h in hook_config.handlers if h.enabled]
         return []
 
     def find_matching_handler(

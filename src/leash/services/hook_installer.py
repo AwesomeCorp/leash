@@ -59,29 +59,28 @@ class HookInstaller:
         # Step 1: Remove ALL our old hooks (by marker) to prevent duplication
         self._remove_our_hooks(hooks)
 
-        # Step 2: Add hooks derived from the app's hookHandlers config
+        # Step 2: Add one curl hook per enabled event type
+        # Server-side routing handles handler matching, so we only need
+        # one hook entry per event type that pipes stdin JSON to our API.
         for event_name, event_config in app_config.hook_handlers.items():
-            if not event_config.enabled or not event_config.handlers:
+            if not event_config.enabled:
                 continue
 
-            # Get or create the array for this event type
+            # Check if there are any enabled handlers for this event
+            has_enabled = any(h.enabled for h in event_config.handlers)
+            if not has_enabled:
+                continue
+
             arr: list[Any] = hooks.get(event_name, [])
 
-            for handler in event_config.handlers:
-                matcher = handler.matcher
-                command = (
-                    f'curl -sS -X POST "{self._service_url}/api/hooks/claude?event={event_name}" '
-                    f'-H "Content-Type: application/json" -d @- {HOOK_MARKER}'
-                )
+            command = (
+                f'curl -sS -X POST "{self._service_url}/api/hooks/claude?event={event_name}" '
+                f'-H "Content-Type: application/json" -d @- {HOOK_MARKER}'
+            )
 
-                hook_obj: dict[str, Any] = {
-                    "hooks": [{"type": "command", "command": command}],
-                }
-
-                if matcher and matcher != "*":
-                    hook_obj["matcher"] = matcher
-
-                arr.append(hook_obj)
+            arr.append({
+                "hooks": [{"type": "command", "command": command}],
+            })
 
             hooks[event_name] = arr
 

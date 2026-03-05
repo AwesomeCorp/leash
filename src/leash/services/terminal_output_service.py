@@ -1,6 +1,6 @@
 """Ring buffer for real-time terminal / LLM subprocess output with SSE event subscribers.
 
-Stores up to 1000 lines and fires callbacks for SSE consumers so they can
+Stores up to 2000 lines and fires callbacks for SSE consumers so they can
 stream output in real time.
 """
 
@@ -33,7 +33,7 @@ class TerminalOutputService:
     Stores up to *capacity* lines and fires events for SSE consumers.
     """
 
-    CAPACITY = 1000
+    CAPACITY = 2000
 
     def __init__(self) -> None:
         self._buffer: list[TerminalLine | None] = [None] * self.CAPACITY

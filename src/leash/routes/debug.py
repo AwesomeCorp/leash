@@ -87,8 +87,10 @@ async def debug_llm(request: Request) -> JSONResponse:
     if terminal_output is not None:
         try:
             terminal_output.push("debug", "info", "--- Debug LLM Request ---")
+            preview = prompt[:200] + "..." if len(prompt) > 200 else prompt
+            terminal_output.push("debug", "stdout", f"Prompt: {preview}")
         except Exception:
-            pass
+            logger.debug("Failed to push debug terminal output", exc_info=True)
 
     llm_provider = _get_llm_client_provider(request)
     if llm_provider is None:
@@ -106,7 +108,7 @@ async def debug_llm(request: Request) -> JSONResponse:
 
     start = time.monotonic()
     try:
-        client = llm_provider.get_client()
+        client = await llm_provider.get_client()
         llm_response = await client.query(prompt)
     except Exception as exc:
         elapsed = int((time.monotonic() - start) * 1000)
@@ -114,7 +116,7 @@ async def debug_llm(request: Request) -> JSONResponse:
             try:
                 terminal_output.push("debug", "stderr", f"Debug LLM error: {exc}")
             except Exception:
-                pass
+                logger.debug("Failed to push debug terminal output", exc_info=True)
         return JSONResponse(
             content={
                 "success": False,
@@ -138,7 +140,7 @@ async def debug_llm(request: Request) -> JSONResponse:
                 f"category={getattr(llm_response, 'category', 'unknown')} elapsed={elapsed}ms",
             )
         except Exception:
-            pass
+            logger.debug("Failed to push debug terminal output", exc_info=True)
 
     return JSONResponse(
         content={

@@ -18,6 +18,7 @@ from leash.services.llm_client_base import MAX_OUTPUT_SIZE, LLMClientBase
 if TYPE_CHECKING:
     from leash.config import ConfigurationManager
     from leash.models.configuration import LlmConfig
+    from leash.services.terminal_output_service import TerminalOutputService
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +44,9 @@ class ClaudeCliClient(LLMClientBase):
         self,
         config: LlmConfig,
         config_manager: ConfigurationManager | None = None,
+        terminal_output: TerminalOutputService | None = None,
     ) -> None:
-        super().__init__(config_manager=config_manager, initial_config=config)
+        super().__init__(config_manager=config_manager, initial_config=config, terminal_output=terminal_output)
         if config is None:
             raise ValueError("config is required")
         self._config = config
@@ -54,6 +56,8 @@ class ClaudeCliClient(LLMClientBase):
     async def query(self, prompt: str) -> LLMResponse:
         """Send a prompt to the Claude CLI and return a structured response."""
         timeout = self.current_timeout
+        self._push_terminal("claude-cli", "info", f"Querying Claude CLI ({len(prompt)} chars, timeout: {timeout}ms)")
+        self._push_terminal("claude-cli", "stdout", f"Prompt: {self.preview_prompt(prompt)}")
         logger.info(
             "Querying Claude CLI (%d chars, timeout: %dms): %s",
             len(prompt),
@@ -77,11 +81,12 @@ class ClaudeCliClient(LLMClientBase):
                 args = self._build_command_args(prompt)
                 env = _build_subprocess_env()
 
-                result = await run_cli(cmd, args, timeout, "claude-cli", env=env)
+                result = await run_cli(cmd, args, timeout, "claude-cli", env=env, terminal_output=self._terminal_output)
                 elapsed_ms = int((time.monotonic() - start) * 1000)
 
                 response = parse_response(result.output)
                 response.elapsed_ms = elapsed_ms
+                self._push_terminal("claude-cli", "info", f"Completed in {elapsed_ms}ms (score={response.safety_score})")
                 logger.info("Claude CLI query completed in %dms", elapsed_ms)
                 return response
 
@@ -101,6 +106,7 @@ class ClaudeCliClient(LLMClientBase):
                     return self.create_timeout_response("LLM query", _MAX_RETRIES, timeout, total_elapsed)
 
             except FileNotFoundError:
+                self._push_terminal("claude-cli", "stderr", "Claude CLI not found in PATH")
                 return self.create_failure_response(
                     "Claude CLI not found - ensure 'claude' command is installed and in PATH",
                     "Claude CLI is not installed or not in PATH",

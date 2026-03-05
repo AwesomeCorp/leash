@@ -10,7 +10,6 @@ let hookHandlersDirty = false;
 let promptTemplateNames = [];
 
 const HOOK_EVENT_TYPES = [
-    'PermissionRequest',
     'PreToolUse',
     'PostToolUse',
     'PostToolUseFailure',
@@ -26,7 +25,6 @@ const HANDLER_MODES = [
 ];
 
 const HOOK_EVENT_DESCRIPTIONS = {
-    'PermissionRequest': 'Gate for Bash, Read, Write, Web, and MCP operations. Returns allow/deny decisions.',
     'PreToolUse': 'Pre-execution safety gate. Can allow, deny, or ask the user.',
     'PostToolUse': 'Post-execution validation. Can inject additional context.',
     'PostToolUseFailure': 'Handles tool execution failures. Typically log-only.',
@@ -600,24 +598,66 @@ function ensureHookEventConfig(eventType) {
     return currentConfig.hookHandlers[eventType];
 }
 
+function getAllHookEventTypes() {
+    // Merge predefined types with any custom ones from config
+    const fromConfig = Object.keys(getHookHandlers());
+    const all = new Set(HOOK_EVENT_TYPES);
+    fromConfig.forEach(function(k) { all.add(k); });
+    return Array.from(all);
+}
+
+function addHookEventType() {
+    const input = document.getElementById('newHookEventInput');
+    if (!input) return;
+    const name = input.value.trim();
+    if (!name) return;
+    if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(name)) {
+        Toast.show('Invalid Name', 'Hook event name must be alphanumeric (e.g. PreToolUse)', 'warning');
+        return;
+    }
+    const hookHandlers = getHookHandlers();
+    if (hookHandlers[name]) {
+        Toast.show('Already Exists', 'Hook event "' + name + '" already exists', 'warning');
+        return;
+    }
+    ensureHookEventConfig(name);
+    markHookHandlersDirty();
+    renderHookHandlers();
+    input.value = '';
+}
+
+function removeHookEventType(eventType) {
+    if (!currentConfig || !currentConfig.hookHandlers) return;
+    delete currentConfig.hookHandlers[eventType];
+    markHookHandlersDirty();
+    renderHookHandlers();
+}
+
 function renderHookHandlers() {
     const container = document.getElementById('hookHandlersContent');
     if (!container || !currentConfig) return;
 
     const hookHandlers = getHookHandlers();
+    const allEventTypes = getAllHookEventTypes();
 
-    let html = '';
-    for (const eventType of HOOK_EVENT_TYPES) {
+    let html = '<div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;">' +
+        '<input type="text" id="newHookEventInput" placeholder="New hook event name (e.g. PermissionRequest)" ' +
+        'style="flex:1;padding:4px 8px;font-size:0.85em;border:1px solid var(--border-color,#ddd);border-radius:4px;background:var(--bg-secondary,#fff);color:var(--text-primary,#1a1a2e);">' +
+        '<button class="btn btn-sm" onclick="addHookEventType()" style="font-size:11px;white-space:nowrap;">+ Add Hook Event</button>' +
+        '</div>';
+
+    for (const eventType of allEventTypes) {
         const eventConfig = hookHandlers[eventType] || { enabled: true, handlers: [] };
         const handlers = eventConfig.handlers || [];
         const enabled = eventConfig.enabled !== false;
         const description = HOOK_EVENT_DESCRIPTIONS[eventType] || '';
+        const isCustom = !HOOK_EVENT_TYPES.includes(eventType);
 
         html += `
         <div class="hook-event-card" data-event="${escapeAttr(eventType)}">
             <div class="hook-event-header">
                 <div class="hook-event-title">
-                    <h4>${escapeHtml(eventType)}</h4>
+                    <h4>${escapeHtml(eventType)}${isCustom ? ' <span style="font-size:0.65em;font-weight:400;color:var(--text-muted);">(custom)</span>' : ''}</h4>
                     <label class="hook-event-toggle">
                         <input type="checkbox" ${enabled ? 'checked' : ''}
                             onchange="toggleHookEvent('${escapeAttr(eventType)}', this.checked)"
@@ -625,9 +665,12 @@ function renderHookHandlers() {
                         Enabled
                     </label>
                 </div>
-                <button class="btn btn-sm" onclick="addHandler('${escapeAttr(eventType)}')" style="font-size: 11px;">+ Add Handler</button>
+                <div style="display:flex;gap:4px;">
+                    <button class="btn btn-sm" onclick="addHandler('${escapeAttr(eventType)}')" style="font-size: 11px;">+ Add Handler</button>
+                    <button class="btn btn-sm" onclick="removeHookEventType('${escapeAttr(eventType)}')" style="font-size: 11px; color: var(--color-danger); border-color: var(--color-danger);" title="Remove this hook event">Remove</button>
+                </div>
             </div>
-            <p class="hook-event-desc">${escapeHtml(description)}</p>
+            ${description ? `<p class="hook-event-desc">${escapeHtml(description)}</p>` : ''}
             <div id="handlers-${escapeAttr(eventType)}">
                 ${handlers.length === 0
                     ? '<p class="hook-empty-msg">No handlers configured. Click "+ Add Handler" to create one.</p>'
@@ -640,6 +683,14 @@ function renderHookHandlers() {
     container.innerHTML = html;
 }
 
+function toggleHandlerEnabled(eventType, index) {
+    const eventConfig = (currentConfig.hookHandlers || {})[eventType];
+    if (!eventConfig || !eventConfig.handlers || !eventConfig.handlers[index]) return;
+    eventConfig.handlers[index].enabled = !eventConfig.handlers[index].enabled;
+    markHookHandlersDirty();
+    renderEventHandlers(eventType);
+}
+
 function renderHandlerRow(eventType, handler, index, editing) {
     if (editing) {
         return renderHandlerEditRow(eventType, handler, index);
@@ -649,11 +700,17 @@ function renderHandlerRow(eventType, handler, index, editing) {
     const rowId = `handler-${safeEvent}-${index}`;
     const badgeColor = MODE_BADGE_COLORS[handler.mode] || 'var(--text-faint)';
     const promptFile = handler.promptTemplate ? handler.promptTemplate.replace(/^.*[\\\/]/, '') : '';
+    const isDisabled = handler.enabled === false;
+    const disabledStyle = isDisabled ? 'opacity: 0.45;' : '';
+    const disabledBadge = isDisabled ? '<span style="font-size:0.7em;font-weight:600;color:var(--text-muted);background:var(--bg-tertiary,#e5e7eb);padding:1px 5px;border-radius:3px;margin-left:4px;">DISABLED</span>' : '';
 
     return `
-    <div id="${rowId}" class="handler-row">
+    <div id="${rowId}" class="handler-row" style="${disabledStyle}">
         <div class="handler-row-details">
-            <span class="handler-name" title="Handler name">${escapeHtml(handler.name || '(unnamed)')}</span>
+            <label style="cursor:pointer;display:inline-flex;align-items:center;margin-right:6px;" title="${isDisabled ? 'Enable' : 'Disable'} this handler">
+                <input type="checkbox" ${isDisabled ? '' : 'checked'} onchange="toggleHandlerEnabled('${safeEvent}', ${index})" onclick="event.stopPropagation()" style="cursor:pointer;">
+            </label>
+            <span class="handler-name" title="Handler name">${escapeHtml(handler.name || '(unnamed)')}</span>${disabledBadge}
             <span class="handler-mode-badge" style="background: ${badgeColor};" title="Mode">${escapeHtml(handler.mode || 'log-only')}</span>
             <span class="handler-client-badge" title="Client: ${handler.client || 'all'}">${handler.client ? escapeHtml(handler.client) : 'all'}</span>
             <code class="handler-matcher" title="Matcher pattern: ${escapeAttr(handler.matcher || '*')}">${escapeHtml(handler.matcher || '*')}</code>
@@ -735,6 +792,13 @@ function renderHandlerEditRow(eventType, handler, index) {
             </div>
             <div class="handler-edit-checkbox">
                 <label>
+                    <input type="checkbox" id="${rowId}-enabled" ${handler.enabled !== false ? 'checked' : ''}
+                        style="cursor: pointer;">
+                    Enabled
+                </label>
+            </div>
+            <div class="handler-edit-checkbox">
+                <label>
                     <input type="checkbox" id="${rowId}-autoapprove" ${handler.autoApprove ? 'checked' : ''}
                         style="cursor: pointer;">
                     Auto-approve when safe
@@ -758,6 +822,7 @@ function addHandler(eventType) {
     const eventConfig = ensureHookEventConfig(eventType);
     const newHandler = {
         name: '',
+        enabled: true,
         matcher: '*',
         client: null,
         mode: 'log-only',
@@ -822,6 +887,7 @@ function applyEditHandler(eventType, index) {
     const thresholdStrictEl = document.getElementById(`${rowId}-thresholdStrict`);
     const thresholdModerateEl = document.getElementById(`${rowId}-thresholdModerate`);
     const thresholdPermissiveEl = document.getElementById(`${rowId}-thresholdPermissive`);
+    const enabledEl = document.getElementById(`${rowId}-enabled`);
     const autoApproveEl = document.getElementById(`${rowId}-autoapprove`);
 
     if (!nameEl) return;
@@ -831,6 +897,7 @@ function applyEditHandler(eventType, index) {
     if (!handler) return;
 
     handler.name = nameEl.value.trim();
+    handler.enabled = enabledEl ? enabledEl.checked : true;
     handler.matcher = matcherEl.value.trim() || '*';
     handler.client = clientEl.value || null;
     handler.mode = modeEl.value;

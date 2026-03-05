@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import logging
+import os
 import pkgutil
+import signal
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from leash.config import ConfigurationManager
+from leash.middleware.security_headers import SecurityHeadersMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -103,13 +109,14 @@ async def lifespan(app: FastAPI):
     copilot_hook_installer = CopilotHookInstaller(service_url=service_url)
     prompt_template_svc = PromptTemplateService(prompts_dir=prompts_dir)
     profile_svc = ProfileService(config_manager=config_mgr)
+    await profile_svc.initialize()
     adaptive_threshold_svc = AdaptiveThresholdService()
     insights_engine = InsightsEngine(adaptive_service=adaptive_threshold_svc, session_manager=session_mgr)
     audit_report_gen = AuditReportGenerator(session_manager=session_mgr, adaptive_service=adaptive_threshold_svc, profile_service=profile_svc)
     trigger_svc = TriggerService(config_manager=config_mgr)
     console_status_svc = ConsoleStatusService(enforcement_service=enforcement_svc)
     terminal_output_svc = TerminalOutputService()
-    llm_client_provider = LLMClientProvider(config_manager=config_mgr)
+    llm_client_provider = LLMClientProvider(config_manager=config_mgr, terminal_output=terminal_output_svc)
 
     # Harness clients
     claude_client = ClaudeHarnessClient()
@@ -120,10 +127,22 @@ async def lifespan(app: FastAPI):
     transcript_watcher = TranscriptWatcher()
     transcript_watcher.set_harness_clients([claude_client, copilot_client])
 
-    # Tray services (null by default — platform-specific ones can be swapped in)
+    # Tray services — use platform-specific services when available
+    pending_decision_svc = PendingDecisionService()
     tray_svc = NullTrayService()
     notification_svc = NullNotificationService()
-    pending_decision_svc = PendingDecisionService()
+    if config.tray.enabled and sys.platform == "win32":
+        try:
+            from leash.services.tray.windows import WindowsTrayService, WindowsNotificationService
+            tray_svc = WindowsTrayService(dashboard_url=service_url)
+            notification_svc = WindowsNotificationService(tray_service=tray_svc)
+            logger.info("Windows tray service enabled")
+        except Exception:
+            logger.warning(
+                "Failed to initialize Windows tray services (tray.enabled=true), "
+                "falling back to null services. Install pystray and Pillow for tray support.",
+                exc_info=True,
+            )
 
     # Handler factory
     handler_factory = HookHandlerFactory(
@@ -156,18 +175,75 @@ async def lifespan(app: FastAPI):
     app.state.pending_decision_service = pending_decision_svc
     app.state.handler_factory = handler_factory
 
+    # Start tray service
+    try:
+        await tray_svc.start()
+    except Exception:
+        logger.warning("Failed to start tray service, continuing without tray", exc_info=True)
+        tray_svc = NullTrayService()
+        notification_svc = NullNotificationService()
+        app.state.tray_service = tray_svc
+        app.state.notification_service = notification_svc
+
     # Apply CLI args
     if getattr(app.state, "cli_enforce", False):
         await enforcement_svc.set_mode("enforce")
 
-    logger.info("Leash started — port %d, enforcement: %s",
+    # Install a force-exit handler: second Ctrl+C kills immediately.
+    # On Windows, uvicorn's signal handling can fail to trigger lifespan
+    # shutdown, leaving the process stuck.  This ensures a way out.
+    _shutting_down = False
+
+    def _force_exit_handler(sig: int, frame: Any) -> None:
+        nonlocal _shutting_down
+        if _shutting_down:
+            logger.warning("Force exit (second signal received)")
+            os._exit(1)
+        _shutting_down = True
+        logger.info("Shutdown signal received — press Ctrl+C again to force exit")
+        raise KeyboardInterrupt
+
+    if sys.platform == "win32":
+        signal.signal(signal.SIGINT, _force_exit_handler)
+        signal.signal(signal.SIGBREAK, _force_exit_handler)
+    else:
+        signal.signal(signal.SIGINT, _force_exit_handler)
+        signal.signal(signal.SIGTERM, _force_exit_handler)
+
+    logger.info("Leash started - port %d, enforcement: %s",
                 config.server.port, enforcement_svc.mode)
     yield
 
-    # Cleanup
+    _shutting_down = True
+
+    # Cleanup — force exit after 5 seconds if graceful shutdown stalls
     logger.info("Leash shutting down")
-    await llm_client_provider.dispose()
-    transcript_watcher.stop()
+
+    async def _graceful_cleanup() -> None:
+        # Stop tray first (unblocks its message loop thread)
+        try:
+            tray_svc.stop()
+        except Exception:
+            logger.debug("Error stopping tray service during shutdown", exc_info=True)
+
+        # Dispose LLM clients (kills persistent subprocesses)
+        try:
+            await llm_client_provider.dispose()
+        except Exception:
+            logger.debug("Error disposing LLM client provider", exc_info=True)
+
+        # Stop transcript watcher
+        try:
+            transcript_watcher.stop()
+        except Exception:
+            logger.debug("Error stopping transcript watcher", exc_info=True)
+
+    try:
+        await asyncio.wait_for(_graceful_cleanup(), timeout=5.0)
+        logger.info("Graceful shutdown complete")
+    except asyncio.TimeoutError:
+        logger.error("Graceful shutdown timed out after 5s, forcing exit")
+        os._exit(1)
 
 
 def create_app(config_path: str | None = None) -> FastAPI:
@@ -181,6 +257,9 @@ def create_app(config_path: str | None = None) -> FastAPI:
 
     if config_path:
         app.state.config_path = config_path
+
+    # Security headers (no-cache, CSP, X-Frame-Options, etc.) on all responses
+    app.add_middleware(SecurityHeadersMiddleware)
 
     # Auto-discover and register route modules
     _discover_routers(app)

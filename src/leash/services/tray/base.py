@@ -26,6 +26,10 @@ class TrayService(Protocol):
         """Update the tray icon tooltip/status text."""
         ...
 
+    def stop(self) -> None:
+        """Stop the tray icon/service and clean up."""
+        ...
+
 
 class NotificationService(Protocol):
     """Shows native OS notifications (passive alerts and interactive approve/deny dialogs)."""

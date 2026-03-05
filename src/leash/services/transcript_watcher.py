@@ -81,6 +81,9 @@ class ClaudeSession:
     git_root: str | None = None
     branch: str | None = None
     repository: str | None = None
+    parent_session_id: str | None = None
+    agent_id: str | None = None
+    slug: str | None = None
 
 
 @dataclass
@@ -362,6 +365,12 @@ class TranscriptWatcher:
 
         for project in projects:
             cwd = project.cwd
+            if not cwd and project.provider == "claude":
+                # Try to get CWD from the most recent session's JSONL metadata
+                for s in project.sessions:
+                    if s.cwd:
+                        cwd = s.cwd
+                        break
             if not cwd and project.provider == "claude":
                 cwd = decode_claude_project_path(project.name)
             if not cwd:

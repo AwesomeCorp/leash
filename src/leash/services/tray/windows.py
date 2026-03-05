@@ -1,7 +1,10 @@
-"""Windows tray and notification services using pystray (optional dependency).
+"""Windows tray and notification services.
 
-If pystray / Pillow are not installed the module still imports cleanly;
-``WindowsTrayService.is_available`` will simply be ``False``.
+Uses pystray for the system tray icon and windows-toasts for rich toast
+notifications with interactive approve/deny buttons.
+
+Both libraries are optional — the module imports cleanly without them and
+falls back gracefully.
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ from leash.models.tray_models import NotificationInfo, TrayDecision
 
 logger = logging.getLogger(__name__)
 
+# --- Optional dependency: pystray + Pillow (tray icon) ---
 try:
     import pystray
     from PIL import Image, ImageDraw
@@ -23,6 +27,19 @@ try:
     HAS_PYSTRAY = True
 except ImportError:
     HAS_PYSTRAY = False
+
+# --- Optional dependency: windows-toasts (rich toast notifications) ---
+try:
+    from windows_toasts import (
+        InteractableWindowsToaster,
+        Toast,
+        ToastActivatedEventArgs,
+        ToastButton,
+    )
+
+    HAS_TOASTS = True
+except ImportError:
+    HAS_TOASTS = False
 
 
 def _create_default_icon() -> Any:
@@ -111,35 +128,103 @@ class WindowsTrayService:
         if self._disposed:
             return
         self._disposed = True
+        self._started = False
         self._exit_tray()
+        # Wait briefly for the tray thread to finish
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+            self._thread = None
 
 
 class WindowsNotificationService:
-    """Windows notification service using pystray balloon/notify.
+    """Windows notification service using windows-toasts for rich notifications.
 
-    For interactive decisions, delegates to the ``PendingDecisionService``
-    (web dashboard fallback) since pystray notifications are passive.
+    Supports interactive approve/deny buttons via Windows toast notifications.
+    Falls back to pystray balloon notifications if windows-toasts is unavailable.
     """
 
     def __init__(self, tray_service: WindowsTrayService) -> None:
         self._tray = tray_service
+        self._toaster: Any | None = None
+        if HAS_TOASTS:
+            try:
+                self._toaster = InteractableWindowsToaster("Leash")
+            except Exception:
+                logger.debug("Failed to create Windows toaster", exc_info=True)
 
     @property
     def supports_interactive(self) -> bool:
-        # pystray's notify is passive only; interactive decisions use the web dashboard
-        return False
+        return self._toaster is not None
 
     async def show_alert(self, info: NotificationInfo) -> None:
-        if not self._tray.is_available or self._tray._icon is None:
-            return
-        try:
-            self._tray._icon.notify(
-                title=info.title[:63],
-                message=info.body[:255],
-            )
-        except Exception:
-            logger.debug("Failed to show Windows notification", exc_info=True)
+        """Show a passive toast notification."""
+        if self._toaster is not None:
+            try:
+                toast = Toast([info.title[:200], info.body[:500]])
+                self._toaster.show_toast(toast)
+                return
+            except Exception:
+                logger.debug("Toast alert failed, trying pystray fallback", exc_info=True)
+
+        # Fallback to pystray balloon
+        if self._tray.is_available and self._tray._icon is not None:
+            try:
+                self._tray._icon.notify(
+                    title=info.title[:63],
+                    message=info.body[:255],
+                )
+            except Exception:
+                logger.debug("Failed to show Windows notification", exc_info=True)
 
     async def show_interactive(self, info: NotificationInfo, timeout: float) -> TrayDecision | None:
-        # Passive-only on Windows via pystray; fall through to pending decision / dashboard
-        return None
+        """Show a toast with Approve/Deny buttons and wait for user response."""
+        if self._toaster is None:
+            return None
+
+        loop = asyncio.get_running_loop()
+        result_future: asyncio.Future[TrayDecision | None] = loop.create_future()
+
+        def _on_activated(event_args: ToastActivatedEventArgs) -> None:
+            try:
+                args = event_args.arguments
+                if "action=approve" in args:
+                    loop.call_soon_threadsafe(result_future.set_result, TrayDecision.APPROVE)
+                elif "action=deny" in args:
+                    loop.call_soon_threadsafe(result_future.set_result, TrayDecision.DENY)
+                else:
+                    # Clicked the toast body (not a button) — treat as no decision
+                    loop.call_soon_threadsafe(result_future.set_result, None)
+            except Exception:
+                if not result_future.done():
+                    loop.call_soon_threadsafe(result_future.set_result, None)
+
+        def _on_dismissed(_: Any) -> None:
+            if not result_future.done():
+                loop.call_soon_threadsafe(result_future.set_result, None)
+
+        def _on_failed(_: Any) -> None:
+            if not result_future.done():
+                loop.call_soon_threadsafe(result_future.set_result, None)
+
+        try:
+            tool_label = info.tool_name or "unknown tool"
+            score_str = f"Score: {info.safety_score}" if info.safety_score is not None else ""
+            body = info.reasoning or info.body
+            if score_str:
+                body = f"{score_str} — {body}"
+
+            toast = Toast([f"Leash: {tool_label} requires approval", body[:500]])
+            toast.AddAction(ToastButton("Approve", "action=approve"))
+            toast.AddAction(ToastButton("Deny", "action=deny"))
+            toast.on_activated = _on_activated
+            toast.on_dismissed = _on_dismissed
+            toast.on_failed = _on_failed
+
+            self._toaster.show_toast(toast)
+
+            return await asyncio.wait_for(result_future, timeout=timeout)
+        except asyncio.TimeoutError:
+            return None
+        except Exception:
+            logger.debug("Failed to show interactive Windows toast", exc_info=True)
+            return None

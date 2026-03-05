@@ -5,12 +5,17 @@ from __future__ import annotations
 import json
 import logging
 from os.path import basename
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
+from leash.routes._tray_helpers import make_tray_decision as _make_tray_decision
 from leash.security.input_sanitizer import InputSanitizer
+
+if TYPE_CHECKING:
+    from leash.services.tray.base import NotificationService, TrayService
+    from leash.services.tray.pending_decision import PendingDecisionService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -67,15 +72,15 @@ def _get_console_status(request: Request) -> Any:
     return getattr(request.app.state, "console_status_service", None)
 
 
-def _get_tray_service(request: Request) -> Any:
+def _get_tray_service(request: Request) -> TrayService | None:
     return getattr(request.app.state, "tray_service", None)
 
 
-def _get_notification_service(request: Request) -> Any:
+def _get_notification_service(request: Request) -> NotificationService | None:
     return getattr(request.app.state, "notification_service", None)
 
 
-def _get_pending_decision_service(request: Request) -> Any:
+def _get_pending_decision_service(request: Request) -> PendingDecisionService | None:
     return getattr(request.app.state, "pending_decision_service", None)
 
 
@@ -303,7 +308,7 @@ async def handle_claude_hook(
         output = None
         if handler_factory is not None:
             try:
-                handler_instance = handler_factory.create(
+                handler_instance = await handler_factory.create(
                     getattr(handler, "mode", ""),
                     getattr(handler, "prompt_template", None),
                     session_id,
@@ -321,33 +326,15 @@ async def handle_claude_hook(
         if output is None:
             return _NO_OPINION
 
-        # Decision logic based on enforcement mode
-        if mode == "observe":
-            logger.debug(
-                "Observe mode - analyzed %s (score=%s) but not enforcing",
-                tool_name,
-                getattr(output, "safety_score", "?"),
-            )
-            return _NO_OPINION
-
-        elif mode == "approve-only":
-            if getattr(output, "auto_approve", False) and harness_client is not None:
-                response = harness_client.format_response(event, output)
-                return JSONResponse(content=response)
-            # Not safe enough, fall through to user
-            logger.debug(
-                "Approve-only mode - %s not safe enough (score=%s), falling through to user",
-                tool_name,
-                getattr(output, "safety_score", "?"),
-            )
-            return _NO_OPINION
-
-        else:
-            # enforce mode
-            if harness_client is not None:
-                response = harness_client.format_response(event, output)
-                return JSONResponse(content=response)
-            return _NO_OPINION
+        # Decision logic based on enforcement mode + tray integration
+        return await _make_tray_decision(
+            mode=mode, output=output, harness_client=harness_client,
+            event=event, tool_name=tool_name,
+            notification_svc=_get_notification_service(request),
+            pending_decision_svc=_get_pending_decision_service(request),
+            tray_config=getattr(app_config, "tray", None) if app_config else None,
+            provider="claude",
+        )
 
     except Exception as exc:
         logger.error("Error processing Claude hook for %s: %s", event, exc)

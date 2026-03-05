@@ -6,6 +6,10 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from leash.services.terminal_output_service import TerminalOutputService
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +32,7 @@ async def run(
     source_name: str,
     *,
     env: dict[str, str] | None = None,
+    terminal_output: TerminalOutputService | None = None,
 ) -> CliProcessResult:
     """Run a CLI subprocess with timeout and output size limits.
 
@@ -40,6 +45,7 @@ async def run(
         timeout_ms: Maximum time in milliseconds to wait for the process.
         source_name: Label for log messages (e.g. "claude-cli").
         env: Optional environment variables for the subprocess.
+        terminal_output: Optional service for pushing stdout/stderr previews to the terminal panel.
 
     Returns:
         A CliProcessResult with output, error, and exit code.
@@ -95,6 +101,18 @@ async def run(
         raise RuntimeError(f"Command failed with exit code {exit_code}: {error_message}")
 
     logger.debug("[%s] Completed in %dms (exit code 0)", source_name, elapsed_ms)
+
+    # Push stdout preview and stderr lines to terminal
+    if terminal_output is not None:
+        try:
+            if stdout_text.strip():
+                preview = stdout_text.strip()[:200]
+                terminal_output.push(source_name, "stdout", f"Output: {preview}")
+            if stderr_text.strip():
+                for line in stderr_text.strip().splitlines()[:5]:
+                    terminal_output.push(source_name, "stderr", line)
+        except Exception:
+            logger.debug("Failed to push terminal output for %s", source_name, exc_info=True)
 
     return CliProcessResult(
         output=stdout_text,
