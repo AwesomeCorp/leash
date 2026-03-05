@@ -106,7 +106,7 @@ async def lifespan(app: FastAPI):
     enforcement_svc = EnforcementService(config_manager=config_mgr)
     service_url = f"http://{config.server.host}:{config.server.port}"
     hook_installer = HookInstaller(config_manager=config_mgr, service_url=service_url)
-    copilot_hook_installer = CopilotHookInstaller(service_url=service_url)
+    copilot_hook_installer = CopilotHookInstaller(service_url=service_url, config_manager=config_mgr)
     prompt_template_svc = PromptTemplateService(prompts_dir=prompts_dir)
     profile_svc = ProfileService(config_manager=config_mgr)
     await profile_svc.initialize()

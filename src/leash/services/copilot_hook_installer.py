@@ -23,8 +23,9 @@ class CopilotHookInstaller:
     Supports both repo-level (.github/hooks/) and user-level (~/.copilot/hooks/) installation.
     """
 
-    def __init__(self, service_url: str = "http://localhost:5050") -> None:
+    def __init__(self, service_url: str = "http://localhost:5050", config_manager: Any = None) -> None:
         self._service_url = service_url
+        self._config_manager = config_manager
 
     # ---- Public API ----
 
@@ -73,19 +74,52 @@ class CopilotHookInstaller:
 
     # ---- Internal installation ----
 
+    def _get_enabled_events(self) -> list[str]:
+        """Get copilot events that are enabled in the app config.
+
+        Maps Copilot camelCase event names to the PascalCase names used in hookHandlers config.
+        """
+        # Copilot event -> config key mapping
+        event_map = {"preToolUse": "PreToolUse", "postToolUse": "PostToolUse"}
+
+        if self._config_manager is None:
+            return list(COPILOT_EVENTS)
+
+        config = self._config_manager.get_configuration()
+        enabled = []
+        for copilot_event in COPILOT_EVENTS:
+            config_key = event_map.get(copilot_event, copilot_event)
+            hook_config = config.hook_handlers.get(config_key)
+            if hook_config is None or hook_config.enabled:
+                # If no config exists for this event or it's enabled, include it
+                enabled.append(copilot_event)
+        return enabled
+
     def _install_to_directory(self, hooks_dir: Path) -> None:
         """Install scripts and hooks.json to the given directory."""
         hooks_dir.mkdir(parents=True, exist_ok=True)
 
-        # Generate per-event scripts
+        enabled_events = self._get_enabled_events()
+
+        # Remove scripts for disabled events
         for event_name in COPILOT_EVENTS:
+            if event_name not in enabled_events:
+                bash_path = hooks_dir / f"{event_name}.sh"
+                ps_path = hooks_dir / f"{event_name}.ps1"
+                if bash_path.exists() and SCRIPT_MARKER in bash_path.read_text(encoding="utf-8"):
+                    bash_path.unlink()
+                if ps_path.exists() and SCRIPT_MARKER in ps_path.read_text(encoding="utf-8"):
+                    ps_path.unlink()
+
+        # Generate per-event scripts for enabled events
+        for event_name in enabled_events:
             self._write_bash_script(hooks_dir, event_name)
             self._write_powershell_script(hooks_dir, event_name)
 
-        # Generate or update hooks.json
-        self._write_hooks_json(hooks_dir)
+        # Generate or update hooks.json (only enabled events)
+        self._write_hooks_json(hooks_dir, enabled_events)
 
-        logger.info("Copilot hooks installed at %s", hooks_dir)
+        logger.info("Copilot hooks installed at %s (events: %s)", hooks_dir, enabled_events)
 
     def _uninstall_from_directory(self, hooks_dir: Path) -> None:
         """Remove our scripts and entries from hooks.json."""
@@ -188,8 +222,10 @@ class CopilotHookInstaller:
         )
         script_path.write_text(content, encoding="utf-8")
 
-    def _write_hooks_json(self, hooks_dir: Path) -> None:
+    def _write_hooks_json(self, hooks_dir: Path, enabled_events: list[str] | None = None) -> None:
         """Generate or update hooks.json with our hook entries."""
+        if enabled_events is None:
+            enabled_events = list(COPILOT_EVENTS)
         hooks_json_path = hooks_dir / "hooks.json"
 
         if hooks_json_path.exists():
@@ -210,7 +246,7 @@ class CopilotHookInstaller:
             hooks_obj = {}
 
         # Add our hook entries per Copilot spec: { type, bash, powershell }
-        for event_name in COPILOT_EVENTS:
+        for event_name in enabled_events:
             event_array: list[Any] = hooks_obj.get(event_name, [])
             if not isinstance(event_array, list):
                 event_array = []
