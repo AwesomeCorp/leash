@@ -168,7 +168,7 @@ async function loadActivity() {
                     ${e.reasoning ? `<div class="activity-reasoning">${escapeHtml(e.reasoning)}</div>` : ''}
                     <div class="activity-meta">
                         <span class="activity-time">${formatTime(e.timestamp)}</span>
-                        ${e.safetyScore != null ? `<span class="activity-score ${getScoreClass(e.safetyScore)}">Score: ${e.safetyScore}</span>` : ''}
+                        ${e.safetyScore != null ? `<span class="activity-score" style="${getScoreColorStyle(e.safetyScore, e.threshold)}">Score: ${e.safetyScore}</span>` : ''}
                         ${e.category ? `<span class="activity-category">${escapeHtml(e.category)}</span>` : ''}
                     </div>
                 </div>

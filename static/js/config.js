@@ -362,78 +362,50 @@ function renderConfig(config) {
         <div class="config-section">
             <h3>System Tray &amp; Notifications</h3>
             <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 12px;">
-                Native OS notifications for hook events. When enabled, shows alerts for denied/uncertain events and interactive approve/deny dialogs in approve-only mode.
+                Native OS notifications. Approved actions are always silent. Score &le; 0 shows an informational denial alert (no buttons).
+                Uncertain scores (0 &lt; score &lt; threshold) show interactive Approve/Deny toast. Enforce mode never shows tray.
             </p>
             <div class="config-field">
                 <label class="config-label" for="cfg-tray-enabled">
-                    Enabled
-                    <small>Master switch for tray icon and notifications</small>
+                    Tray Icon
+                    <small>Master switch for the system tray icon</small>
                 </label>
                 <select id="cfg-tray-enabled" class="config-input"
                     data-path="tray.enabled" data-type="bool" aria-label="Tray enabled">
-                    <option value="true" ${config.tray?.enabled ? 'selected' : ''}>Enabled</option>
-                    <option value="false" ${!config.tray?.enabled ? 'selected' : ''}>Disabled</option>
+                    <option value="true" ${config.tray?.enabled !== false ? 'selected' : ''}>Enabled</option>
+                    <option value="false" ${config.tray?.enabled === false ? 'selected' : ''}>Disabled</option>
                 </select>
             </div>
             <div class="config-field">
-                <label class="config-label" for="cfg-tray-alertOnDenied">
-                    Alert on Denied
-                    <small>Show passive notification when events are denied</small>
+                <label class="config-label" for="cfg-tray-showInObserve">
+                    Notifications in Observe Mode
+                    <small>Show tray alerts in observe mode (only when LLM analysis is enabled)</small>
                 </label>
-                <select id="cfg-tray-alertOnDenied" class="config-input"
-                    data-path="tray.alertOnDenied" data-type="bool" aria-label="Alert on denied">
-                    <option value="true" ${config.tray?.alertOnDenied !== false ? 'selected' : ''}>Yes</option>
-                    <option value="false" ${config.tray?.alertOnDenied === false ? 'selected' : ''}>No</option>
+                <select id="cfg-tray-showInObserve" class="config-input"
+                    data-path="tray.showInObserve" data-type="bool" aria-label="Show in observe">
+                    <option value="false" ${config.tray?.showInObserve !== true ? 'selected' : ''}>Off</option>
+                    <option value="true" ${config.tray?.showInObserve === true ? 'selected' : ''}>On</option>
                 </select>
             </div>
             <div class="config-field">
-                <label class="config-label" for="cfg-tray-alertOnUncertain">
-                    Alert on Uncertain
-                    <small>Show passive notification for uncertain/passthrough events</small>
+                <label class="config-label" for="cfg-tray-showInApproveOnly">
+                    Notifications in Approve-Only Mode
+                    <small>Show interactive approve/deny toasts for uncertain scores</small>
                 </label>
-                <select id="cfg-tray-alertOnUncertain" class="config-input"
-                    data-path="tray.alertOnUncertain" data-type="bool" aria-label="Alert on uncertain">
-                    <option value="true" ${config.tray?.alertOnUncertain !== false ? 'selected' : ''}>Yes</option>
-                    <option value="false" ${config.tray?.alertOnUncertain === false ? 'selected' : ''}>No</option>
-                </select>
-            </div>
-            <div class="config-field">
-                <label class="config-label" for="cfg-tray-interactiveEnabled">
-                    Interactive Dialogs
-                    <small>Show approve/deny popup for uncertain events (approve-only mode)</small>
-                </label>
-                <select id="cfg-tray-interactiveEnabled" class="config-input"
-                    data-path="tray.interactiveEnabled" data-type="bool" aria-label="Interactive enabled">
-                    <option value="true" ${config.tray?.interactiveEnabled !== false ? 'selected' : ''}>Enabled</option>
-                    <option value="false" ${config.tray?.interactiveEnabled === false ? 'selected' : ''}>Disabled</option>
+                <select id="cfg-tray-showInApproveOnly" class="config-input"
+                    data-path="tray.showInApproveOnly" data-type="bool" aria-label="Show in approve-only">
+                    <option value="true" ${config.tray?.showInApproveOnly !== false ? 'selected' : ''}>On</option>
+                    <option value="false" ${config.tray?.showInApproveOnly === false ? 'selected' : ''}>Off</option>
                 </select>
             </div>
             <div class="config-field">
                 <label class="config-label" for="cfg-tray-interactiveTimeout">
                     Interactive Timeout (seconds)
-                    <small>Max wait time for user response before falling through (max 25)</small>
+                    <small>How long to wait for user response before falling through</small>
                 </label>
                 <input id="cfg-tray-interactiveTimeout" class="config-input" type="number"
-                    value="${config.tray?.interactiveTimeoutSeconds || 10}" min="5" max="25"
+                    value="${config.tray?.interactiveTimeoutSeconds || 10}" min="5" max="30"
                     data-path="tray.interactiveTimeoutSeconds" aria-label="Interactive timeout">
-            </div>
-            <div class="config-field">
-                <label class="config-label" for="cfg-tray-scoreMin">
-                    Interactive Score Min
-                    <small>Minimum safety score to show interactive dialog</small>
-                </label>
-                <input id="cfg-tray-scoreMin" class="config-input" type="number"
-                    value="${config.tray?.interactiveScoreMin || 30}" min="0" max="100"
-                    data-path="tray.interactiveScoreMin" aria-label="Score min">
-            </div>
-            <div class="config-field">
-                <label class="config-label" for="cfg-tray-scoreMax">
-                    Interactive Score Max
-                    <small>Maximum safety score to show interactive dialog</small>
-                </label>
-                <input id="cfg-tray-scoreMax" class="config-input" type="number"
-                    value="${config.tray?.interactiveScoreMax || 85}" min="0" max="100"
-                    data-path="tray.interactiveScoreMax" aria-label="Score max">
             </div>
         </div>
 

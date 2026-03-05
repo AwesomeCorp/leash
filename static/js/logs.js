@@ -213,7 +213,7 @@ function buildLogEntryHtml(log, i) {
                 <span class="log-tool" title="${escapeHtml(log.toolName || '')}">${escapeHtml(log.toolName || 'N/A')}</span>
                 <span class="log-request-preview" title="${escapeHtml(requestPreview)}">${escapeHtml(requestPreview)}</span>
                 <span class="log-decision ${decisionClass}">${getDecisionLabel(log.decision)}</span>
-                <span class="log-score ${getScoreClass(log.safetyScore || 0)}">${log.safetyScore != null ? log.safetyScore : '-'}</span>
+                <span class="log-score" style="${getScoreColorStyle(log.safetyScore, log.threshold)}">${log.safetyScore != null ? log.safetyScore : '-'}</span>
                 <span class="log-session" title="${escapeHtml(log.sessionId || '')}">${escapeHtml((log.sessionId || '').substring(0, 8))}...</span>
                 <span class="log-expand">&#9660;</span>
             </div>
@@ -235,7 +235,7 @@ function buildLogEntryHtml(log, i) {
                 </div>` : ''}
                 <div class="detail-section detail-row">
                     ${log.threshold != null ? `<div><div class="detail-label">Threshold</div><span>${log.threshold}</span></div>` : ''}
-                    ${log.safetyScore != null ? `<div><div class="detail-label">Score</div><span class="${getScoreClass(log.safetyScore)}">${log.safetyScore}</span></div>` : ''}
+                    ${log.safetyScore != null ? `<div><div class="detail-label">Score</div><span style="${getScoreColorStyle(log.safetyScore, log.threshold)}">${log.safetyScore}</span></div>` : ''}
                     ${log.decision ? `<div><div class="detail-label">Decision</div><span class="log-decision ${getDecisionClass(log.decision)}">${getDecisionLabel(log.decision)}</span></div>` : ''}
                     ${log.category ? `<div><div class="detail-label">Category</div><span class="category-badge category-${log.category}">${escapeHtml(log.category)}</span></div>` : ''}
                     ${log.elapsedMs != null ? `<div><div class="detail-label">Latency</div><span>${log.elapsedMs}ms</span></div>` : ''}

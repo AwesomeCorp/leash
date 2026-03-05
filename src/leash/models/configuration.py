@@ -114,12 +114,9 @@ class TrayConfig(BaseModel):
     model_config = {"alias_generator": to_camel, "populate_by_name": True}
 
     enabled: bool = True
-    alert_on_denied: bool = True
-    alert_on_uncertain: bool = False
-    interactive_enabled: bool = True
+    show_in_observe: bool = False
+    show_in_approve_only: bool = True
     interactive_timeout_seconds: int = 10
-    interactive_score_min: int = 30
-    interactive_score_max: int = 85
 
 
 class CopilotConfig(BaseModel):

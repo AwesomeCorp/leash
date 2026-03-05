@@ -100,6 +100,8 @@ async def _try_log_event(
 
         if output is None:
             decision = "logged"
+        elif getattr(output, "tray_decision", None):
+            decision = output.tray_decision
         elif getattr(output, "auto_approve", False):
             decision = "auto-approved"
         else:
@@ -302,26 +304,34 @@ async def handle_copilot_hook(
             except Exception:
                 return _NO_OPINION
 
-        # Log event
-        await _try_log_event(
-            session_manager, harness_client, trigger_svc, console_status, adaptive_svc,
-            hook_input, output, handler,
-        )
-
         if output is None:
+            await _try_log_event(
+                session_manager, harness_client, trigger_svc, console_status, adaptive_svc,
+                hook_input, None, handler,
+            )
             return _NO_OPINION
 
         tool_name = getattr(hook_input, "tool_name", "") or ""
 
         # Decision logic based on enforcement mode + tray integration
-        return await _make_tray_decision(
+        # (tray may override output.auto_approve)
+        response = await _make_tray_decision(
             mode=mode, output=output, harness_client=harness_client,
             event=event, tool_name=tool_name,
             notification_svc=_get_notification_service(request),
             pending_decision_svc=_get_pending_decision_service(request),
             tray_config=getattr(app_config, "tray", None) if app_config else None,
             provider="copilot",
+            cwd=getattr(hook_input, "cwd", None),
         )
+
+        # Log after tray decision so the log reflects any user override
+        await _try_log_event(
+            session_manager, harness_client, trigger_svc, console_status, adaptive_svc,
+            hook_input, output, handler,
+        )
+
+        return response
 
     except Exception as exc:
         logger.error("Error processing Copilot hook for %s: %s", event, exc)

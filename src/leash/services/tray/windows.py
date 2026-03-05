@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 import threading
 from typing import Any
 
-from leash.models.tray_models import NotificationInfo, TrayDecision
+from leash.models.tray_models import NotificationInfo, NotificationLevel, TrayDecision
 
 logger = logging.getLogger(__name__)
 
@@ -54,10 +55,7 @@ def _create_default_icon() -> Any:
 
 
 class WindowsTrayService:
-    """Windows system tray icon using pystray on a background thread.
-
-    Requires ``pystray`` and ``Pillow`` optional dependencies.
-    """
+    """Windows system tray icon using pystray on a background thread."""
 
     def __init__(self, dashboard_url: str = "http://localhost:5050") -> None:
         self._dashboard_url = dashboard_url
@@ -130,17 +128,53 @@ class WindowsTrayService:
         self._disposed = True
         self._started = False
         self._exit_tray()
-        # Wait briefly for the tray thread to finish
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=2.0)
             self._thread = None
 
 
+def _build_toast_body(info: NotificationInfo) -> str:
+    """Build a detailed multi-line body for the toast notification."""
+    lines: list[str] = []
+
+    # Folder/repo
+    if info.cwd:
+        folder = os.path.basename(info.cwd.rstrip("\\/")) or info.cwd
+        lines.append(f"Folder: {folder}")
+
+    # Tool request summary
+    if info.tool_input_summary:
+        preview = info.tool_input_summary[:150]
+        lines.append(f"Request: {preview}")
+
+    # Score (prominent)
+    if info.safety_score is not None:
+        threshold_str = f"/{info.threshold}" if info.threshold is not None else ""
+        lines.append(f"Score: {info.safety_score}{threshold_str}")
+
+    # Suggested action
+    if info.suggested_action:
+        action_labels = {"approve": "APPROVE", "deny": "DENY", "review": "NEEDS REVIEW"}
+        lines.append(f"Suggested: {action_labels.get(info.suggested_action, info.suggested_action)}")
+
+    # LLM reasoning
+    if info.reasoning:
+        reason = info.reasoning[:200]
+        lines.append(f"Reason: {reason}")
+
+    # Timeout
+    if info.timeout_seconds:
+        lines.append(f"Timeout: {info.timeout_seconds}s")
+
+    return "\n".join(lines) if lines else info.body
+
+
 class WindowsNotificationService:
     """Windows notification service using windows-toasts for rich notifications.
 
-    Supports interactive approve/deny buttons via Windows toast notifications.
-    Falls back to pystray balloon notifications if windows-toasts is unavailable.
+    Supports:
+    - Passive alerts (informational, no buttons) for score <= 0
+    - Interactive toasts with Approve/Deny buttons for uncertain scores
     """
 
     def __init__(self, tray_service: WindowsTrayService) -> None:
@@ -157,10 +191,11 @@ class WindowsNotificationService:
         return self._toaster is not None
 
     async def show_alert(self, info: NotificationInfo) -> None:
-        """Show a passive toast notification."""
+        """Show a passive toast notification (no buttons)."""
         if self._toaster is not None:
             try:
-                toast = Toast([info.title[:200], info.body[:500]])
+                body = _build_toast_body(info)
+                toast = Toast([info.title[:200], body[:500]])
                 self._toaster.show_toast(toast)
                 return
             except Exception:
@@ -171,13 +206,13 @@ class WindowsNotificationService:
             try:
                 self._tray._icon.notify(
                     title=info.title[:63],
-                    message=info.body[:255],
+                    message=(info.reasoning or info.body)[:255],
                 )
             except Exception:
                 logger.debug("Failed to show Windows notification", exc_info=True)
 
     async def show_interactive(self, info: NotificationInfo, timeout: float) -> TrayDecision | None:
-        """Show a toast with Approve/Deny buttons and wait for user response."""
+        """Show a toast with Approve/Deny buttons and rich detail."""
         if self._toaster is None:
             return None
 
@@ -192,7 +227,6 @@ class WindowsNotificationService:
                 elif "action=deny" in args:
                     loop.call_soon_threadsafe(result_future.set_result, TrayDecision.DENY)
                 else:
-                    # Clicked the toast body (not a button) — treat as no decision
                     loop.call_soon_threadsafe(result_future.set_result, None)
             except Exception:
                 if not result_future.done():
@@ -207,13 +241,8 @@ class WindowsNotificationService:
                 loop.call_soon_threadsafe(result_future.set_result, None)
 
         try:
-            tool_label = info.tool_name or "unknown tool"
-            score_str = f"Score: {info.safety_score}" if info.safety_score is not None else ""
-            body = info.reasoning or info.body
-            if score_str:
-                body = f"{score_str} — {body}"
-
-            toast = Toast([f"Leash: {tool_label} requires approval", body[:500]])
+            body = _build_toast_body(info)
+            toast = Toast([info.title[:200], body[:500]])
             toast.AddAction(ToastButton("Approve", "action=approve"))
             toast.AddAction(ToastButton("Deny", "action=deny"))
             toast.on_activated = _on_activated

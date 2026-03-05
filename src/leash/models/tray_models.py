@@ -28,11 +28,16 @@ class NotificationInfo(BaseModel):
     body: str
     tool_name: str | None = None
     safety_score: int | None = None
+    threshold: int | None = None
     reasoning: str | None = None
+    suggested_action: str | None = None
     category: str | None = None
     decision_id: str | None = None
     provider: str | None = None
+    cwd: str | None = None
+    tool_input_summary: str | None = None
     command_preview: str | None = None
+    timeout_seconds: int | None = None
     level: NotificationLevel = NotificationLevel.INFO
 
 

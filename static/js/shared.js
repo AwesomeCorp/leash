@@ -260,6 +260,34 @@ function getScoreClass(score) {
     return 'low';
 }
 
+/**
+ * Returns an inline CSS style string for a score relative to a threshold.
+ * Below threshold: red gradient (darker red closer to 0).
+ * At/above threshold: green gradient (darker green closer to 100).
+ */
+function getScoreColorStyle(score, threshold) {
+    if (score == null) return '';
+    if (threshold == null) threshold = 85;
+    if (score < threshold) {
+        // 0 = darkest red, threshold-1 = lightest red
+        var t = Math.max(0, Math.min(score, threshold - 1)) / Math.max(threshold, 1);
+        // Interpolate from dark red (153,0,0) to light red (239,154,154)
+        var r = Math.round(153 + t * (239 - 153));
+        var g = Math.round(0 + t * 100);
+        var b = Math.round(0 + t * 100);
+        return 'color:rgb(' + r + ',' + g + ',' + b + ');font-weight:700;';
+    } else {
+        // threshold = lightest green, 100 = darkest green
+        var range = 100 - threshold;
+        var t2 = range > 0 ? (score - threshold) / range : 1;
+        // Interpolate from light green (129,199,132) to dark green (27,94,32)
+        var r2 = Math.round(129 - t2 * (129 - 27));
+        var g2 = Math.round(199 - t2 * (199 - 94));
+        var b2 = Math.round(132 - t2 * (132 - 32));
+        return 'color:rgb(' + r2 + ',' + g2 + ',' + b2 + ');font-weight:700;';
+    }
+}
+
 function getDecisionClass(decision) {
     switch (decision) {
         case 'auto-approved':

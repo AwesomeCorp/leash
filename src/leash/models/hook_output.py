@@ -19,3 +19,4 @@ class HookOutput(BaseModel):
     system_message: str | None = None
     interrupt: bool = False
     elapsed_ms: int = 0
+    tray_decision: str | None = None

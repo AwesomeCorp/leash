@@ -1,4 +1,18 @@
-"""Shared tray notification helpers for hook endpoints."""
+"""Shared tray notification helpers for hook endpoints.
+
+Tray behavior by mode:
+- **Enforce**: No tray at all. LLM result is enforced silently.
+- **Observe**: Tray only if ``show_in_observe`` is True (default False).
+  Only fires when LLM analysis is enabled. Informational only.
+- **Approve-only**: Tray if ``show_in_approve_only`` is True (default True).
+
+Within observe/approve-only, the score determines what happens:
+- score >= threshold (approved): silent, no tray.
+- score <= 0 (clearly dangerous): passive alert (no buttons), auto-deny in
+  approve-only.
+- 0 < score < threshold (uncertain): interactive toast with Approve/Deny
+  buttons so the user can override.
+"""
 
 from __future__ import annotations
 
@@ -21,108 +35,61 @@ _NO_OPINION = JSONResponse(content={})
 logger = logging.getLogger(__name__)
 
 
-async def try_interactive_tray_decision(
-    notification_svc: NotificationService | None,
-    pending_decision_svc: PendingDecisionService | None,
-    tray_config: TrayConfig | None,
+def _build_info(
     tool_name: str | None,
-    safety_score: int | None,
-    reasoning: str | None,
-    category: str | None,
+    output: Any,
+    cwd: str | None,
     provider: str,
-) -> TrayDecision | None:
-    """Create a pending decision, attempt interactive notification, and await result.
+    timeout: int | None,
+    level: NotificationLevel,
+) -> NotificationInfo:
+    """Build a rich NotificationInfo from an LLM output."""
+    score = getattr(output, "safety_score", None)
+    threshold = getattr(output, "threshold", None)
+    reasoning = getattr(output, "reasoning", None)
+    category = getattr(output, "category", None)
 
-    Falls back to a passive alert if interactive is unavailable, then waits for
-    a response from the tray or web dashboard. Returns the user's decision or
-    None on timeout / unavailability.
-    """
-    if pending_decision_svc is None:
-        return None
+    # Build tool input summary
+    tool_input_summary: str | None = None
+    hook_input = getattr(output, "_hook_input", None)
+    if hook_input is not None:
+        ti = getattr(hook_input, "tool_input", None)
+        if isinstance(ti, dict):
+            cmd = ti.get("command")
+            fp = ti.get("file_path")
+            if cmd:
+                tool_input_summary = cmd[:200]
+            elif fp:
+                tool_input_summary = fp
 
-    timeout = getattr(tray_config, "interactive_timeout_seconds", 10) if tray_config else 10
+    # Suggested action based on score
+    suggested_action = None
+    if score is not None and threshold is not None:
+        if score >= threshold:
+            suggested_action = "approve"
+        elif score <= 0:
+            suggested_action = "deny"
+        else:
+            suggested_action = "review"
 
-    info = NotificationInfo(
-        title=f"Leash: {tool_name or 'unknown'} requires approval",
-        body=reasoning or "Awaiting decision",
+    title = f"Leash: {tool_name or 'unknown'}"
+    body = reasoning or f"Score: {score}"
+
+    return NotificationInfo(
+        title=title,
+        body=body,
         tool_name=tool_name,
-        safety_score=safety_score,
+        safety_score=score,
+        threshold=threshold,
         reasoning=reasoning,
+        suggested_action=suggested_action,
         category=category,
         provider=provider,
-        level=NotificationLevel.WARNING,
-    )
-
-    try:
-        decision_id, future = pending_decision_svc.create_pending(info, timeout)
-    except Exception:
-        logger.warning("Failed to create pending tray decision for %s", tool_name, exc_info=True)
-        return None
-
-    # Show interactive notification if the service supports it
-    if notification_svc is not None and getattr(notification_svc, "supports_interactive", False):
-        try:
-            result = await notification_svc.show_interactive(info, timeout)
-            if result is not None:
-                pending_decision_svc.try_resolve(decision_id, result)
-                return result
-        except Exception:
-            logger.warning(
-                "Interactive notification failed for %s, falling back to pending decision",
-                tool_name, exc_info=True,
-            )
-
-    # Show passive alert to notify the user a decision is pending
-    if notification_svc is not None:
-        try:
-            await notification_svc.show_alert(info)
-        except Exception:
-            logger.debug("Failed to show passive alert for pending decision %s", decision_id)
-
-    # Wait for the decision from web dashboard or other UI;
-    # on cancellation or error, clean up the pending entry
-    try:
-        return await future
-    except (asyncio.CancelledError, asyncio.TimeoutError):
-        pending_decision_svc.cancel(decision_id)
-        return None
-    except Exception:
-        logger.warning("Error awaiting tray decision %s for %s", decision_id, tool_name, exc_info=True)
-        pending_decision_svc.cancel(decision_id)
-        return None
-
-
-async def show_passive_notification(
-    notification_svc: NotificationService | None,
-    tool_name: str | None,
-    safety_score: int | None,
-    reasoning: str | None,
-    category: str | None,
-    provider: str,
-    decision: str,
-) -> None:
-    """Show a passive (non-interactive) tray notification for a tool decision."""
-    if notification_svc is None:
-        return
-
-    level = NotificationLevel.DANGER if decision == "denied" else NotificationLevel.INFO
-    verb = "Denied" if decision == "denied" else "Observed"
-
-    info = NotificationInfo(
-        title=f"Leash: {tool_name or 'unknown'} {verb}",
-        body=reasoning or f"Score: {safety_score}",
-        tool_name=tool_name,
-        safety_score=safety_score,
-        reasoning=reasoning,
-        category=category,
-        provider=provider,
+        cwd=cwd,
+        tool_input_summary=tool_input_summary,
+        timeout_seconds=timeout,
         level=level,
     )
-
-    try:
-        await notification_svc.show_alert(info)
-    except Exception:
-        logger.debug("Failed to show passive notification", exc_info=True)
 
 
 async def make_tray_decision(
@@ -135,90 +102,115 @@ async def make_tray_decision(
     pending_decision_svc: PendingDecisionService | None,
     tray_config: TrayConfig | None,
     provider: str,
+    cwd: str | None = None,
 ) -> JSONResponse:
-    """Apply enforcement mode decision logic with tray integration.
+    """Apply enforcement mode decision logic with tray integration."""
 
-    Handles observe, approve-only, and enforce modes with interactive tray
-    decisions and passive notifications. Returns a JSONResponse.
-    """
-    tray_enabled = tray_config and getattr(tray_config, "enabled", False)
-    interactive_enabled = tray_enabled and getattr(tray_config, "interactive_enabled", True)
+    score = getattr(output, "safety_score", None) or 0
+    threshold = getattr(output, "threshold", None) or 85
+    auto_approved = getattr(output, "auto_approve", False)
+    timeout = getattr(tray_config, "interactive_timeout_seconds", 10) if tray_config else 10
 
-    if mode == "observe":
-        logger.debug(
-            "Observe mode - analyzed %s (score=%s) but not enforcing",
-            tool_name, getattr(output, "safety_score", "?"),
-        )
-        if tray_enabled:
-            await show_passive_notification(
-                notification_svc, tool_name,
-                getattr(output, "safety_score", None),
-                getattr(output, "reasoning", None),
-                getattr(output, "category", None),
-                provider, "observed",
-            )
-        return _NO_OPINION
-
-    elif mode == "approve-only":
-        if getattr(output, "auto_approve", False) and harness_client is not None:
-            response = harness_client.format_response(event, output)
-            return JSONResponse(content=response)
-
-        # Try interactive tray decision
-        if interactive_enabled:
-            tray_result = await try_interactive_tray_decision(
-                notification_svc, pending_decision_svc, tray_config,
-                tool_name, getattr(output, "safety_score", None),
-                getattr(output, "reasoning", None),
-                getattr(output, "category", None), provider,
-            )
-            if tray_result is not None:
-                if tray_result == TrayDecision.APPROVE and harness_client is not None:
-                    output.auto_approve = True
-                    response = harness_client.format_response(event, output)
-                    return JSONResponse(content=response)
-                elif tray_result == TrayDecision.DENY:
-                    return _NO_OPINION
-
-        # Not safe enough for auto-approve and no tray override; fall through to user
-        logger.debug(
-            "Approve-only mode - %s not safe enough (score=%s), falling through to user",
-            tool_name, getattr(output, "safety_score", "?"),
-        )
-        return _NO_OPINION
-
-    else:
-        # enforce mode
-        if getattr(output, "auto_approve", False) and harness_client is not None:
-            response = harness_client.format_response(event, output)
-            return JSONResponse(content=response)
-
-        # Try interactive tray decision before denying
-        if interactive_enabled:
-            tray_result = await try_interactive_tray_decision(
-                notification_svc, pending_decision_svc, tray_config,
-                tool_name, getattr(output, "safety_score", None),
-                getattr(output, "reasoning", None),
-                getattr(output, "category", None), provider,
-            )
-            if tray_result is not None:
-                if tray_result == TrayDecision.APPROVE and harness_client is not None:
-                    output.auto_approve = True
-                    response = harness_client.format_response(event, output)
-                    return JSONResponse(content=response)
-                # TrayDecision.DENY: fall through to hard deny via harness_client
-
-        # Deny + passive notification
-        if tray_enabled and getattr(tray_config, "alert_on_denied", True):
-            await show_passive_notification(
-                notification_svc, tool_name,
-                getattr(output, "safety_score", None),
-                getattr(output, "reasoning", None),
-                getattr(output, "category", None),
-                provider, "denied",
-            )
-
+    # ── Enforce mode: no tray, just enforce ──
+    if mode == "enforce":
+        if auto_approved and harness_client is not None:
+            return JSONResponse(content=harness_client.format_response(event, output))
+        # Deny
         if harness_client is not None:
-            response = harness_client.format_response(event, output)
-            return JSONResponse(content=response)
+            return JSONResponse(content=harness_client.format_response(event, output))
         return _NO_OPINION
+
+    # ── Determine if tray is enabled for this mode ──
+    tray_active = False
+    if tray_config and getattr(tray_config, "enabled", False):
+        if mode == "observe" and getattr(tray_config, "show_in_observe", False):
+            tray_active = True
+        elif mode == "approve-only" and getattr(tray_config, "show_in_approve_only", True):
+            tray_active = True
+
+    # ── Approved (score >= threshold): silent ──
+    if auto_approved:
+        if harness_client is not None:
+            return JSONResponse(content=harness_client.format_response(event, output))
+        return _NO_OPINION
+
+    # ── Not approved: decide based on score ──
+
+    if score <= 0:
+        # Clearly dangerous: informational alert (no buttons)
+        if tray_active and notification_svc is not None:
+            info = _build_info(tool_name, output, cwd, provider, None, NotificationLevel.DANGER)
+            info.title = f"Leash: {tool_name or 'unknown'} DENIED"
+            try:
+                await notification_svc.show_alert(info)
+            except Exception:
+                logger.debug("Failed to show denial alert for %s", tool_name, exc_info=True)
+
+        if mode == "approve-only":
+            # Deny in approve-only
+            if harness_client is not None:
+                return JSONResponse(content=harness_client.format_response(event, output))
+            return _NO_OPINION
+        else:
+            # Observe: do nothing
+            return _NO_OPINION
+
+    # Score > 0 and < threshold: uncertain — interactive toast
+    if tray_active and notification_svc is not None and pending_decision_svc is not None:
+        info = _build_info(tool_name, output, cwd, provider, timeout, NotificationLevel.WARNING)
+        info.title = f"Leash: {tool_name or 'unknown'} needs review"
+
+        try:
+            decision_id, future = pending_decision_svc.create_pending(info, timeout)
+        except Exception:
+            logger.warning("Failed to create pending decision for %s", tool_name, exc_info=True)
+            return _NO_OPINION
+
+        # Try interactive toast — shows one toast with Approve/Deny buttons
+        interactive_handled = False
+        if getattr(notification_svc, "supports_interactive", False):
+            try:
+                result = await notification_svc.show_interactive(info, timeout)
+                interactive_handled = True  # Toast was shown, don't show a second one
+                if result is not None:
+                    pending_decision_svc.try_resolve(decision_id, result)
+                else:
+                    # User dismissed or toast timed out — cancel pending
+                    pending_decision_svc.cancel(decision_id)
+                if result == TrayDecision.APPROVE and harness_client is not None:
+                    output.auto_approve = True
+                    output.tray_decision = "tray-approved"
+                    return JSONResponse(content=harness_client.format_response(event, output))
+                elif result == TrayDecision.DENY:
+                    output.tray_decision = "tray-denied"
+                    if mode == "approve-only" and harness_client is not None:
+                        return JSONResponse(content=harness_client.format_response(event, output))
+                    return _NO_OPINION
+            except Exception:
+                logger.debug("Interactive toast failed for %s", tool_name, exc_info=True)
+
+        # Fall back only if interactive toast was not shown (e.g. not supported)
+        if not interactive_handled:
+            try:
+                await notification_svc.show_alert(info)
+            except Exception:
+                pass
+
+            try:
+                result = await future
+                if result == TrayDecision.APPROVE and harness_client is not None:
+                    output.auto_approve = True
+                    output.tray_decision = "tray-approved"
+                    return JSONResponse(content=harness_client.format_response(event, output))
+                elif result == TrayDecision.DENY:
+                    output.tray_decision = "tray-denied"
+                    if mode == "approve-only" and harness_client is not None:
+                        return JSONResponse(content=harness_client.format_response(event, output))
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pending_decision_svc.cancel(decision_id)
+            except Exception:
+                pending_decision_svc.cancel(decision_id)
+
+    # No tray or tray timed out: fall through
+    logger.debug("%s mode - %s (score=%s) falling through to user", mode, tool_name, score)
+    return _NO_OPINION
