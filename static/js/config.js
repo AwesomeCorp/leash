@@ -716,7 +716,7 @@ function renderHandlerRow(eventType, handler, index, editing) {
             <span class="handler-mode-badge" style="background: ${badgeColor};" title="Mode">${escapeHtml(handler.mode || 'log-only')}</span>
             <span class="handler-client-badge" title="Client: ${handler.client || 'all'}">${handler.client ? escapeHtml(handler.client) : 'all'}</span>
             <code class="handler-matcher" title="Matcher pattern: ${escapeAttr(handler.matcher || '*')}">${escapeHtml(handler.matcher || '*')}</code>
-            <span class="handler-thresholds" title="Thresholds: Strict / Moderate / Permissive">S:<strong>${handler.thresholdStrict || 95}</strong> M:<strong>${handler.thresholdModerate || 85}</strong> P:<strong>${handler.thresholdPermissive || 70}</strong></span>
+            <span class="handler-thresholds" title="Thresholds: Strict / Moderate / Permissive / Trust">S:<strong>${handler.thresholdStrict || 95}</strong> M:<strong>${handler.thresholdModerate || 85}</strong> P:<strong>${handler.thresholdPermissive || 70}</strong> T:<strong>${handler.thresholdTrust || 50}</strong></span>
             ${handler.autoApprove ? '<span class="handler-auto-approve" title="Auto-approve enabled">Auto-approve</span>' : ''}
             ${promptFile ? `<span class="handler-prompt-label" title="Prompt: ${escapeAttr(handler.promptTemplate)}">Prompt: ${escapeHtml(promptFile)}</span>` : ''}
         </div>
@@ -790,6 +790,11 @@ function renderHandlerEditRow(eventType, handler, index) {
             <div>
                 <label class="handler-edit-label">Permissive Threshold</label>
                 <input type="number" id="${rowId}-thresholdPermissive" value="${handler.thresholdPermissive != null ? handler.thresholdPermissive : 70}"
+                    min="0" max="100" class="handler-edit-input handler-edit-input-mono">
+            </div>
+            <div>
+                <label class="handler-edit-label">Trust Threshold</label>
+                <input type="number" id="${rowId}-thresholdTrust" value="${handler.thresholdTrust != null ? handler.thresholdTrust : 50}"
                     min="0" max="100" class="handler-edit-input handler-edit-input-mono">
             </div>
             <div class="handler-edit-checkbox">
@@ -889,6 +894,7 @@ function applyEditHandler(eventType, index) {
     const thresholdStrictEl = document.getElementById(`${rowId}-thresholdStrict`);
     const thresholdModerateEl = document.getElementById(`${rowId}-thresholdModerate`);
     const thresholdPermissiveEl = document.getElementById(`${rowId}-thresholdPermissive`);
+    const thresholdTrustEl = document.getElementById(`${rowId}-thresholdTrust`);
     const enabledEl = document.getElementById(`${rowId}-enabled`);
     const autoApproveEl = document.getElementById(`${rowId}-autoapprove`);
 
@@ -907,6 +913,7 @@ function applyEditHandler(eventType, index) {
     handler.thresholdStrict = parseInt(thresholdStrictEl?.value, 10) || 95;
     handler.thresholdModerate = parseInt(thresholdModerateEl?.value, 10) || 85;
     handler.thresholdPermissive = parseInt(thresholdPermissiveEl?.value, 10) || 70;
+    handler.thresholdTrust = parseInt(thresholdTrustEl?.value, 10) || 50;
     handler.threshold = handler.thresholdModerate; // Default threshold = moderate
     handler.autoApprove = autoApproveEl.checked;
 

@@ -40,6 +40,13 @@ BUILTIN_PROFILES: dict[str, PermissionProfile] = {
         auto_approve_enabled=True,
         threshold_overrides={"Bash": 80, "Write": 75, "Edit": 70, "Read": 60},
     ),
+    "trust": PermissionProfile(
+        name="Trust",
+        description="Minimal friction - only blocks clearly dangerous operations (score <= 50)",
+        default_threshold=50,
+        auto_approve_enabled=True,
+        threshold_overrides={"Bash": 55, "Write": 50, "Edit": 50, "Read": 30},
+    ),
     "lockdown": PermissionProfile(
         name="Lockdown",
         description="Maximum security - nothing is auto-approved",

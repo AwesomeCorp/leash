@@ -27,6 +27,7 @@ class HandlerConfig(BaseModel):
     threshold_strict: int = 95
     threshold_moderate: int = 85
     threshold_permissive: int = 70
+    threshold_trust: int = 50
     auto_approve: bool = False
     config: dict[str, Any] = {}
 
@@ -43,6 +44,8 @@ class HandlerConfig(BaseModel):
                 return self.threshold_moderate
             case "permissive":
                 return self.threshold_permissive
+            case "trust":
+                return self.threshold_trust
             case "lockdown":
                 return 101  # Nothing passes
             case _:
