@@ -28,7 +28,9 @@ async def get_buffer(request: Request) -> JSONResponse:
 
     lines = svc.get_buffer()
     serialized = [dataclasses.asdict(line) if dataclasses.is_dataclass(line) else line for line in lines]
-    return JSONResponse(content=serialized)
+    # Use default=str to handle datetime and other non-serializable types
+    body = json.dumps(serialized, default=str)
+    return JSONResponse(content=json.loads(body))
 
 
 @router.post("/api/terminal/clear")
