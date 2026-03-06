@@ -142,11 +142,15 @@ var chipGroupToLogField = {
 function updateChipDefinitionsFromLogs(logs) {
     if (!Array.isArray(logs)) return;
     var changed = {};
-
-    // Reset counts and recompute from current log set
     var groups = Object.keys(chipGroupToLogField);
+
+    // Count occurrences from returned logs per group.
+    // Only reset counts for values whose filter is currently active
+    // (those are represented in the API response). Preserve counts
+    // for disabled chips so the number stays stable when toggling.
+    var freshCounts = {};
     for (var g = 0; g < groups.length; g++) {
-        chipCounts[groups[g]] = {};
+        freshCounts[groups[g]] = {};
     }
 
     for (var i = 0; i < logs.length; i++) {
@@ -157,20 +161,34 @@ function updateChipDefinitionsFromLogs(logs) {
             var field = chipGroupToLogField[group];
             var val = log[field];
             if (!val) continue;
-            // Count occurrences
-            if (!chipCounts[group]) chipCounts[group] = {};
-            chipCounts[group][val] = (chipCounts[group][val] || 0) + 1;
+            freshCounts[group][val] = (freshCounts[group][val] || 0) + 1;
             // Discover new values
             if (chipDefinitions[group].indexOf(val) === -1) {
                 chipDefinitions[group].push(val);
                 activeChipFilters[group].add(val);
                 changed[group] = true;
             } else {
-                // Still re-render to update counts
                 changed[group] = true;
             }
         }
     }
+
+    // Merge fresh counts: update active chips, keep disabled chips unchanged
+    for (var g = 0; g < groups.length; g++) {
+        var group = groups[g];
+        if (!chipCounts[group]) chipCounts[group] = {};
+        var active = activeChipFilters[group];
+        var vals = chipDefinitions[group];
+        for (var v = 0; v < vals.length; v++) {
+            var val = vals[v];
+            if (active && active.has(val)) {
+                // This value's filter is on, so the API included its logs
+                chipCounts[group][val] = freshCounts[group][val] || 0;
+            }
+            // If filter is off, keep the existing count unchanged
+        }
+    }
+
     var changedGroups = Object.keys(changed);
     for (var c = 0; c < changedGroups.length; c++) {
         saveChipState(changedGroups[c]);

@@ -182,23 +182,25 @@ class WindowsNotificationService:
     - Interactive decisions via custom tkinter popup with colored buttons
     """
 
-    def __init__(self, tray_service: WindowsTrayService) -> None:
+    def __init__(self, tray_service: WindowsTrayService, use_large_popup: bool = True) -> None:
         self._tray = tray_service
         self._toaster: Any | None = None
         self._popup_thread: Any | None = None
+        self._use_large_popup = use_large_popup
         if HAS_TOASTS:
             try:
                 self._toaster = InteractableWindowsToaster("Leash")
             except Exception:
                 logger.debug("Failed to create Windows toaster", exc_info=True)
         # Start the custom popup thread for interactive decisions
-        try:
-            from leash.services.tray.windows_popup import PopupThread
+        if use_large_popup:
+            try:
+                from leash.services.tray.windows_popup import PopupThread
 
-            self._popup_thread = PopupThread()
-            self._popup_thread.start()
-        except Exception:
-            logger.debug("Failed to start popup thread", exc_info=True)
+                self._popup_thread = PopupThread()
+                self._popup_thread.start()
+            except Exception:
+                logger.debug("Failed to start popup thread", exc_info=True)
 
     @property
     def supports_interactive(self) -> bool:

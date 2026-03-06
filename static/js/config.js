@@ -437,6 +437,17 @@ function renderConfig(config) {
                     <option value="true" ${config.tray?.sound === true ? 'selected' : ''}>On</option>
                 </select>
             </div>
+            <div class="config-field">
+                <label class="config-label" for="cfg-tray-useLargePopup">
+                    Large Decision Popup
+                    <small>Use a custom popup window with colored buttons instead of native toast notifications (requires restart)</small>
+                </label>
+                <select id="cfg-tray-useLargePopup" class="config-input"
+                    data-path="tray.useLargePopup" data-type="bool" aria-label="Use large popup">
+                    <option value="true" ${config.tray?.useLargePopup !== false ? 'selected' : ''}>Enabled</option>
+                    <option value="false" ${config.tray?.useLargePopup === false ? 'selected' : ''}>Disabled (use native toast)</option>
+                </select>
+            </div>
         </div>
 
         <div class="config-section">

@@ -118,6 +118,7 @@ class TrayConfig(BaseModel):
     show_in_approve_only: bool = True
     interactive_timeout_seconds: int = 10
     sound: bool = False
+    use_large_popup: bool = True
 
 
 class CopilotConfig(BaseModel):

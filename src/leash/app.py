@@ -135,7 +135,10 @@ async def lifespan(app: FastAPI):
         try:
             from leash.services.tray.windows import WindowsTrayService, WindowsNotificationService
             tray_svc = WindowsTrayService(dashboard_url=service_url)
-            notification_svc = WindowsNotificationService(tray_service=tray_svc)
+            notification_svc = WindowsNotificationService(
+                tray_service=tray_svc,
+                use_large_popup=config.tray.use_large_popup,
+            )
             logger.info("Windows tray service enabled")
         except Exception:
             logger.warning(

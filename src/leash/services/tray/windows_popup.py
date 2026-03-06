@@ -85,12 +85,13 @@ class DecisionPopup:
         root.attributes("-topmost", True)
         root.overrideredirect(False)
 
-        # Window size and centering
+        # Window size and position (lower-left corner with padding)
         w, h = 620, 460
         sx = root.winfo_screenwidth()
         sy = root.winfo_screenheight()
-        x = (sx - w) // 2
-        y = (sy - h) // 2
+        pad = 16  # padding from screen edges
+        x = pad
+        y = sy - h - pad - 48  # 48px extra for taskbar
         root.geometry(f"{w}x{h}+{x}+{y}")
 
         # Prevent closing via X button (force button click or timeout)
