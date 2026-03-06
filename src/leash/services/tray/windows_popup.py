@@ -85,12 +85,12 @@ class DecisionPopup:
         root.attributes("-topmost", True)
         root.overrideredirect(False)
 
-        # Window size and position (lower-left corner with padding)
+        # Window size and position (lower-right corner with padding)
         w, h = 620, 460
         sx = root.winfo_screenwidth()
         sy = root.winfo_screenheight()
         pad = 16  # padding from screen edges
-        x = pad
+        x = sx - w - pad
         y = sy - h - pad - 48  # 48px extra for taskbar
         root.geometry(f"{w}x{h}+{x}+{y}")
 
