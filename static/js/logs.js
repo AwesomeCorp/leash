@@ -94,6 +94,41 @@ function getChipFilterParam(group) {
     return Array.from(active).join(',');
 }
 
+/* ---------- Dynamic Chip Discovery ---------- */
+
+var chipGroupToLogField = {
+    harness: 'provider',
+    hookType: 'type',
+    toolName: 'toolName',
+    category: 'category',
+    decision: 'decision'
+};
+
+function updateChipDefinitionsFromLogs(logs) {
+    if (!Array.isArray(logs)) return;
+    var changed = {};
+    for (var i = 0; i < logs.length; i++) {
+        var log = logs[i];
+        var groups = Object.keys(chipGroupToLogField);
+        for (var g = 0; g < groups.length; g++) {
+            var group = groups[g];
+            if (!chipDefinitions[group] || !activeChipFilters[group]) continue;
+            var field = chipGroupToLogField[group];
+            var val = log[field];
+            if (val && chipDefinitions[group].indexOf(val) === -1) {
+                chipDefinitions[group].push(val);
+                activeChipFilters[group].add(val);
+                changed[group] = true;
+            }
+        }
+    }
+    var changedGroups = Object.keys(changed);
+    for (var c = 0; c < changedGroups.length; c++) {
+        saveChipState(changedGroups[c]);
+        renderChipGroup(changedGroups[c]);
+    }
+}
+
 /* ---------- Data Loading ---------- */
 
 async function refreshData() {
@@ -123,6 +158,9 @@ async function loadLogs(forceFullRender) {
 
     try {
         const logs = await fetchApi(`/api/logs?${params}`);
+
+        try { updateChipDefinitionsFromLogs(logs); }
+        catch (chipErr) { console.error('Chip discovery failed:', chipErr); }
 
         if (logs.length === 0) {
             container.innerHTML = `
@@ -187,6 +225,8 @@ async function loadLogs(forceFullRender) {
                     <button class="btn" onclick="loadLogs(true)">Retry</button>
                 </div>
             `;
+        } else {
+            console.error('Incremental log refresh failed:', error);
         }
     }
 }
@@ -324,7 +364,7 @@ function escapeHtml(str) {
     if (!str) return '';
     const div = document.createElement('div');
     div.textContent = str;
-    return div.innerHTML;
+    return div.innerHTML.replace(/'/g, '&#39;');
 }
 
 function exportLogs(format) {

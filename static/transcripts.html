@@ -16,7 +16,6 @@
         .project-name { font-weight: 600; font-size: 0.95em; color: var(--text-primary, #1a1a2e); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
         .project-meta { font-size: 0.8em; color: var(--text-muted, #666); margin-top: 4px; }
         .project-path { font-size: 0.75em; color: var(--text-muted, #888); margin-top: 2px; font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .badge-claude { font-size: 0.65em; font-weight: 700; background: #d97706; color: #fff; padding: 1px 5px; border-radius: 3px; }
         .badge-copilot { font-size: 0.65em; font-weight: 700; background: #1f6feb; color: #fff; padding: 1px 5px; border-radius: 3px; }
         .badge-git { font-size: 0.65em; font-weight: 600; background: var(--bg-tertiary, #e5e7eb); color: var(--text-secondary, #555); padding: 1px 5px; border-radius: 3px; }
         .badge-repo { font-size: 0.65em; font-weight: 600; background: var(--bg-tertiary, #e5e7eb); color: var(--text-secondary, #555); padding: 1px 5px; border-radius: 3px; }
@@ -118,9 +117,33 @@
         }
         .expand-btn { font-size: 0.8em; color: var(--accent-primary, #2563eb); cursor: pointer; border: none; background: none; padding: 4px 0; }
 
-        .two-panel { display: grid; grid-template-columns: 300px 1fr; gap: 20px; }
+        .two-panel { display: grid; grid-template-columns: 380px 1fr; gap: 20px; }
         .sidebar-panel { max-height: 80vh; overflow-y: auto; }
-        @media (max-width: 900px) { .two-panel { grid-template-columns: 1fr; } }
+        @media (max-width: 960px) { .two-panel { grid-template-columns: 1fr; } }
+
+        /* Folder tree styles */
+        .folder-tree { display: flex; flex-direction: column; gap: 2px; }
+        .folder-tree-node { }
+        .folder-tree-label {
+            display: flex; align-items: center; gap: 6px; padding: 4px 8px;
+            cursor: pointer; border-radius: 4px; font-size: 0.85em; color: var(--text-secondary, #555);
+            user-select: none; transition: background 0.15s;
+        }
+        .folder-tree-label:hover { background: var(--bg-hover, #f0f0f0); }
+        .folder-tree-toggle { font-size: 0.7em; width: 16px; text-align: center; flex-shrink: 0; color: var(--text-muted, #888); }
+        .folder-tree-icon { flex-shrink: 0; }
+        .folder-tree-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .folder-tree-count { font-size: 0.8em; color: var(--text-muted, #888); margin-left: auto; white-space: nowrap; }
+        .folder-tree-children { padding-left: 16px; }
+        .folder-tree-children.collapsed { display: none; }
+        .folder-common-prefix { font-size: 0.75em; color: var(--text-muted, #888); font-family: monospace; padding: 4px 8px; margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        #folderDetailHeader {
+            background: var(--bg-secondary, #fff); border: 1px solid var(--border-color, #e0e0e0);
+            border-radius: 8px; padding: 12px 16px; margin-bottom: 12px; display: none;
+        }
+        #folderDetailHeader .folder-detail-name { font-weight: 700; font-size: 1.05em; color: var(--text-primary, #1a1a2e); }
+        #folderDetailHeader .folder-detail-path { font-size: 0.78em; color: var(--text-muted, #888); font-family: monospace; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        #folderDetailHeader .folder-detail-meta { font-size: 0.82em; color: var(--text-secondary, #555); margin-top: 4px; display: flex; gap: 12px; flex-wrap: wrap; }
 
         .transcript-filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
         .filter-chip {
@@ -203,12 +226,16 @@
                 </p>
                 <div class="two-panel">
                     <div class="sidebar-panel">
-                        <h3 style="margin-bottom:8px;">Folders</h3>
+                        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+                            <h3 style="margin:0;">Folders</h3>
+                            <label class="toggle-btn" style="font-size:0.78em;"><input type="checkbox" id="chkRepoView"> Repo view</label>
+                        </div>
                         <div id="projectList" class="project-list">
                             <div class="empty-state"><p>Loading projects...</p></div>
                         </div>
                     </div>
                     <div>
+                        <div id="folderDetailHeader"></div>
                         <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
                             <h3 style="margin:0;">Sessions</h3>
                             <label class="toggle-btn" style="font-size:0.8em;"><input type="checkbox" id="chkTokenUsage"> Show token usage</label>
@@ -393,6 +420,184 @@
             return encoded.replace(/^([A-Z])--/, '$1:\\').replace(/-/g, '\\');
         }
 
+        // --- Folder Tree Helpers ---
+
+        function buildFolderTree(projects) {
+            var useRepo = document.getElementById('chkRepoView') && document.getElementById('chkRepoView').checked;
+
+            // Get display names and paths
+            var items = projects.map(function(p, i) {
+                var displayName = useRepo && p.repository ? p.repository : (p.name || '');
+                var fullPath = p.cwd || p.path || '';
+                return { idx: i, displayName: displayName, fullPath: fullPath, project: p };
+            });
+
+            // Normalize paths and find common prefix
+            var paths = items.map(function(it) {
+                return it.fullPath.replace(/\\/g, '/').replace(/\/$/, '');
+            });
+
+            var commonPrefix = '';
+            if (paths.length > 1) {
+                var splitPaths = paths.map(function(p) { return p.split('/'); });
+                var parts0 = splitPaths[0];
+                var prefixParts = [];
+                for (var pi = 0; pi < parts0.length; pi++) {
+                    var allMatch = splitPaths.every(function(sp) { return sp[pi] === parts0[pi]; });
+                    if (allMatch) prefixParts.push(parts0[pi]);
+                    else break;
+                }
+                if (prefixParts.length > 0) commonPrefix = prefixParts.join('/');
+            }
+
+            // Build trie
+            var root = { name: '', children: {}, projects: [], fullPath: '' };
+            for (var i = 0; i < items.length; i++) {
+                var relPath = paths[i];
+                if (commonPrefix && relPath.indexOf(commonPrefix) === 0) {
+                    relPath = relPath.substring(commonPrefix.length).replace(/^\//, '');
+                }
+                var segments = relPath ? relPath.split('/') : [items[i].displayName || 'unknown'];
+                var node = root;
+                for (var s = 0; s < segments.length; s++) {
+                    var seg = segments[s];
+                    if (!node.children[seg]) {
+                        node.children[seg] = { name: seg, children: {}, projects: [], fullPath: '' };
+                    }
+                    node = node.children[seg];
+                }
+                node.projects.push(items[i]);
+                node.fullPath = paths[i];
+            }
+
+            // Collapse single-child intermediates
+            function collapse(node) {
+                var childKeys = Object.keys(node.children);
+                while (childKeys.length === 1 && node.projects.length === 0) {
+                    var key = childKeys[0];
+                    var child = node.children[key];
+                    node.name = node.name ? node.name + '/' + child.name : child.name;
+                    node.children = child.children;
+                    node.projects = child.projects;
+                    node.fullPath = child.fullPath;
+                    childKeys = Object.keys(node.children);
+                }
+                childKeys.forEach(function(k) { collapse(node.children[k]); });
+            }
+            Object.keys(root.children).forEach(function(k) { collapse(root.children[k]); });
+
+            return { root: root, commonPrefix: commonPrefix };
+        }
+
+        function getNodeAggregates(node, depth) {
+            if (!depth) depth = 0;
+            if (depth > 50) return { sessionCount: 0, totalSize: 0 };
+            var sessionCount = 0, totalSize = 0;
+            node.projects.forEach(function(it) {
+                var sessions = it.project.sessions || [];
+                sessionCount += sessions.length;
+                sessions.forEach(function(s) { totalSize += s.sizeBytes || 0; });
+            });
+            Object.keys(node.children).forEach(function(k) {
+                var child = getNodeAggregates(node.children[k], depth + 1);
+                sessionCount += child.sessionCount;
+                totalSize += child.totalSize;
+            });
+            return { sessionCount: sessionCount, totalSize: totalSize };
+        }
+
+        var folderTreeIdCounter = 0;
+
+        function renderFolderTreeNode(node, depth) {
+            if (depth > 50) return '';
+            var childKeys = Object.keys(node.children).sort();
+            var isLeaf = childKeys.length === 0 && node.projects.length > 0;
+
+            var html = '';
+
+            if (isLeaf) {
+                // Leaf node: render as clickable project cards
+                for (var p = 0; p < node.projects.length; p++) {
+                    var it = node.projects[p];
+                    var project = it.project;
+                    var idx = it.idx;
+                    html += '<div class="project-card" onclick="selectProject(' + idx + ')" data-idx="' + idx + '">' +
+                        '<div class="project-name">' + escapeHtml(it.displayName) + ' <span class="project-meta-inline" id="project-badges-' + idx + '"></span></div>' +
+                        (project.repository ? '<div style="margin-top:3px;"><span class="badge-repo" title="Repository">' + escapeHtml(project.repository) + '</span></div>' : '') +
+                        '<div class="project-meta" id="project-meta-' + idx + '"></div>' +
+                        '<div id="project-tokens-' + idx + '"></div>' +
+                        '</div>';
+                }
+            } else {
+                // Intermediate or mixed node
+                // Render any direct projects first
+                for (var dp = 0; dp < node.projects.length; dp++) {
+                    var dit = node.projects[dp];
+                    var didx = dit.idx;
+                    html += '<div class="project-card" onclick="selectProject(' + didx + ')" data-idx="' + didx + '">' +
+                        '<div class="project-name">' + escapeHtml(dit.displayName) + ' <span id="project-badges-' + didx + '"></span></div>' +
+                        (dit.project.repository ? '<div style="margin-top:3px;"><span class="badge-repo" title="Repository">' + escapeHtml(dit.project.repository) + '</span></div>' : '') +
+                        '<div class="project-meta" id="project-meta-' + didx + '"></div>' +
+                        '<div id="project-tokens-' + didx + '"></div>' +
+                        '</div>';
+                }
+
+                // Render child folders
+                for (var ci = 0; ci < childKeys.length; ci++) {
+                    var childNode = node.children[childKeys[ci]];
+                    var treeId = 'ftree-' + (folderTreeIdCounter++);
+                    var agg = getNodeAggregates(childNode);
+
+                    html += '<div class="folder-tree-node">' +
+                        '<div class="folder-tree-label" onclick="toggleFolderTreeNode(\'' + treeId + '\',this)">' +
+                        '<span class="folder-tree-toggle" id="ftoggle-' + treeId + '">&#9654;</span>' +
+                        '<span class="folder-tree-icon">&#128193;</span>' +
+                        '<span class="folder-tree-name" title="' + escapeHtml(childKeys[ci]) + '">' + escapeHtml(childKeys[ci]) + '</span>' +
+                        '<span class="folder-tree-count">' + agg.sessionCount + ' sess &middot; ' + formatBytes(agg.totalSize) + '</span>' +
+                        '</div>' +
+                        '<div class="folder-tree-children collapsed" id="' + treeId + '">' +
+                        renderFolderTreeNode(childNode, depth + 1) +
+                        '</div></div>';
+                }
+            }
+
+            return html;
+        }
+
+        function toggleFolderTreeNode(id, labelEl) {
+            var container = document.getElementById(id);
+            var toggle = document.getElementById('ftoggle-' + id);
+            if (!container) return;
+            var isCollapsed = container.classList.contains('collapsed');
+            container.classList.toggle('collapsed', !isCollapsed);
+            if (toggle) toggle.innerHTML = isCollapsed ? '&#9660;' : '&#9654;';
+        }
+
+        function fillProjectMeta(idx) {
+            var project = allProjects[idx];
+            if (!project) return;
+            var sessions = project.sessions || [];
+            var sessionCount = sessions.length;
+            var totalSize = sessions.reduce(function(sum, s) { return sum + (s.sizeBytes || 0); }, 0);
+            var claudeCount = sessions.filter(function(s) { return s.provider === 'claude'; }).length;
+            var copilotCount = sessions.filter(function(s) { return s.provider === 'copilot'; }).length;
+
+            // Badges
+            var badgesEl = document.getElementById('project-badges-' + idx);
+            if (badgesEl) {
+                var badges = '';
+                if (claudeCount > 0) badges += '<span class="badge-claude">CL ' + claudeCount + '</span> ';
+                if (copilotCount > 0) badges += '<span class="badge-copilot">CP ' + copilotCount + '</span>';
+                badgesEl.innerHTML = badges;
+            }
+
+            // Meta
+            var metaEl = document.getElementById('project-meta-' + idx);
+            if (metaEl) {
+                metaEl.textContent = sessionCount + ' session' + (sessionCount !== 1 ? 's' : '') + ' \u00b7 ' + formatBytes(totalSize);
+            }
+        }
+
         // --- Project Browser ---
         async function loadProjects() {
             var list = document.getElementById('projectList');
@@ -412,32 +617,24 @@
                     return bMax - aMax;
                 });
 
-                list.innerHTML = allProjects.map(function(p, i) {
-                    var sessions = p.sessions || [];
-                    var sessionCount = sessions.length;
-                    var totalSize = sessions.reduce(function(sum, s) { return sum + (s.sizeBytes || 0); }, 0);
-                    var claudeCount = sessions.filter(function(s) { return s.provider === 'claude'; }).length;
-                    var copilotCount = sessions.filter(function(s) { return s.provider === 'copilot'; }).length;
-                    var folderPath = p.cwd || p.path || '';
+                // Pass 1: render folder tree structure immediately
+                folderTreeIdCounter = 0;
+                var tree = buildFolderTree(allProjects);
+                var treeHtml = '';
+                if (tree.commonPrefix) {
+                    treeHtml += '<div class="folder-common-prefix" title="' + escapeHtml(tree.commonPrefix) + '">' + escapeHtml(tree.commonPrefix) + '</div>';
+                }
 
-                    // Provider badges
-                    var badges = '';
-                    if (claudeCount > 0) badges += '<span class="badge-claude">CL ' + claudeCount + '</span>';
-                    if (copilotCount > 0) badges += '<span class="badge-copilot">CP ' + copilotCount + '</span>';
+                treeHtml += '<div class="folder-tree">' + renderFolderTreeNode(tree.root, 0) + '</div>';
 
-                    // Git info badges
-                    var gitBadges = '';
-                    if (p.repository) gitBadges += '<span class="badge-repo" title="Repository">' + escapeHtml(p.repository) + '</span>';
-                    if (p.branch) gitBadges += '<span class="badge-git" title="Branch">&#9741; ' + escapeHtml(p.branch) + '</span>';
+                list.innerHTML = treeHtml;
 
-                    return '<div class="project-card" onclick="selectProject(' + i + ')" data-idx="' + i + '">' +
-                        '<div class="project-name">' + escapeHtml(p.name) + ' ' + badges + '</div>' +
-                        (gitBadges ? '<div style="margin-top:3px;">' + gitBadges + '</div>' : '') +
-                        '<div class="project-path" title="' + escapeHtml(folderPath) + '">' + escapeHtml(folderPath) + '</div>' +
-                        '<div class="project-meta">' + sessionCount + ' session' + (sessionCount !== 1 ? 's' : '') + ' &middot; ' + formatBytes(totalSize) + '</div>' +
-                        '<div id="project-tokens-' + i + '"></div>' +
-                        '</div>';
-                }).join('');
+                // Pass 2: fill in session counts, sizes, badges asynchronously
+                requestAnimationFrame(function() {
+                    for (var i = 0; i < allProjects.length; i++) {
+                        fillProjectMeta(i);
+                    }
+                });
             } catch (err) {
                 list.innerHTML = '<div class="empty-state"><p>Error: ' + escapeHtml(err.message) + '</p></div>';
             }
@@ -449,6 +646,24 @@
             if (card) card.classList.add('active');
 
             var project = allProjects[idx];
+            if (!project) return;
+
+            // Populate folder detail header
+            var header = document.getElementById('folderDetailHeader');
+            if (header) {
+                var sessions0 = project.sessions || [];
+                var totalSize0 = sessions0.reduce(function(sum, s) { return sum + (s.sizeBytes || 0); }, 0);
+                var folderPath = project.cwd || project.path || '';
+                header.style.display = '';
+                header.innerHTML = '<div class="folder-detail-name">' + escapeHtml(project.name || 'Unknown') + '</div>' +
+                    '<div class="folder-detail-path" title="' + escapeHtml(folderPath) + '">' + escapeHtml(folderPath) + '</div>' +
+                    '<div class="folder-detail-meta">' +
+                    '<span>' + sessions0.length + ' session' + (sessions0.length !== 1 ? 's' : '') + '</span>' +
+                    '<span>' + formatBytes(totalSize0) + '</span>' +
+                    (project.repository ? '<span class="badge-repo">' + escapeHtml(project.repository) + '</span>' : '') +
+                    '</div>';
+            }
+
             var sessions = (project.sessions || []).sort(function(a, b) { return new Date(b.lastModified) - new Date(a.lastModified); });
             var table = document.getElementById('sessionTable');
             var showTokens = document.getElementById('chkTokenUsage') && document.getElementById('chkTokenUsage').checked;
@@ -1558,6 +1773,9 @@
             var chkTokenUsage = document.getElementById('chkTokenUsage');
             if (chkTokenUsage) chkTokenUsage.checked = loadFilter('cpa-transcript-tokens', false);
 
+            var chkRepoView = document.getElementById('chkRepoView');
+            if (chkRepoView) chkRepoView.checked = loadFilter('cpa-transcript-repoview', false);
+
             loadProjects();
 
             // If ?session= param provided (e.g. from sessions page link), find the project and open transcript
@@ -1602,6 +1820,13 @@
                     } else {
                         updateProjectTokenSummary();
                     }
+                });
+            }
+
+            if (chkRepoView) {
+                chkRepoView.addEventListener('change', function() {
+                    saveFilter('cpa-transcript-repoview', this.checked);
+                    loadProjects();
                 });
             }
         });

@@ -2604,8 +2604,17 @@ kbd {
 }
 
 .provider-badge.provider-claude {
-    background: rgba(130, 80, 223, 0.12);
-    color: #8250df;
+    background: rgba(217, 119, 6, 0.12);
+    color: #d97706;
+}
+
+.badge-claude {
+    font-size: 0.65em;
+    font-weight: 700;
+    background: #d97706;
+    color: #fff;
+    padding: 1px 5px;
+    border-radius: 3px;
 }
 
 .provider-badge.provider-copilot {
@@ -2614,8 +2623,8 @@ kbd {
 }
 
 [data-theme="dark"] .provider-badge.provider-claude {
-    background: rgba(130, 80, 223, 0.2);
-    color: #b48cff;
+    background: rgba(217, 119, 6, 0.2);
+    color: #f59e0b;
 }
 
 [data-theme="dark"] .provider-badge.provider-copilot {

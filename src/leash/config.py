@@ -34,7 +34,7 @@ def create_default_configuration() -> Configuration:
                 handlers=[
                     HandlerConfig(
                         name="bash-analyzer",
-                        matcher="Bash",
+                        matcher="^(Bash|Execute|PowerShell)$",
                         mode="llm-analysis",
                         prompt_template=f"{pd}/bash-prompt.txt",
                         threshold=95,
@@ -52,7 +52,7 @@ def create_default_configuration() -> Configuration:
                     ),
                     HandlerConfig(
                         name="file-read-analyzer",
-                        matcher="Read",
+                        matcher="^(Read|Grep|Glob|NotebookRead|LS)$",
                         mode="llm-analysis",
                         prompt_template=f"{pd}/file-read-prompt.txt",
                         threshold=93,
@@ -61,7 +61,7 @@ def create_default_configuration() -> Configuration:
                     ),
                     HandlerConfig(
                         name="file-write-analyzer",
-                        matcher="Write|Edit",
+                        matcher="^(Write|Edit|NotebookEdit|MultiEdit)$",
                         mode="llm-analysis",
                         prompt_template=f"{pd}/file-write-prompt.txt",
                         threshold=97,
