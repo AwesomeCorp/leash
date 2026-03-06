@@ -253,6 +253,7 @@
                     <h2>Transcript: <span id="transcriptSessionId" style="font-size:0.7em;font-weight:normal;">-</span></h2>
                     <button class="btn btn-sm" onclick="backToBrowser()">Back to Browser</button>
                 </div>
+                <div id="transcriptFilePath" style="font-size:0.78em;color:var(--text-muted,#888);font-family:monospace;margin-bottom:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:none;" title=""></div>
 
                 <div class="viewer-toolbar">
                     <label class="toggle-btn"><input type="checkbox" id="chkAutoScroll" checked> Auto-scroll</label>
@@ -392,6 +393,8 @@
                 var el = document.getElementById('project-tokens-' + idx);
                 if (el) el.innerHTML = renderProjectTokenSummary(project.sessions || []);
             }
+            // Update repo-level summaries if in repo view
+            updateRepoTokenSummaries();
         }
 
         var collapseIdCounter = 0;
@@ -423,11 +426,9 @@
         // --- Folder Tree Helpers ---
 
         function buildFolderTree(projects) {
-            var useRepo = document.getElementById('chkRepoView') && document.getElementById('chkRepoView').checked;
-
-            // Get display names and paths
+            // Get display names and paths (folder view only)
             var items = projects.map(function(p, i) {
-                var displayName = useRepo && p.repository ? p.repository : (p.name || '');
+                var displayName = p.name || '';
                 var fullPath = p.cwd || p.path || '';
                 return { idx: i, displayName: displayName, fullPath: fullPath, project: p };
             });
@@ -598,9 +599,143 @@
             }
         }
 
+        // --- Repo View (flat list grouped by repository) ---
+
+        function buildRepoView(projects) {
+            var byRepo = {};
+            var noRepo = [];
+            for (var i = 0; i < projects.length; i++) {
+                var p = projects[i];
+                var repo = p.repository;
+                if (repo) {
+                    if (!byRepo[repo]) byRepo[repo] = [];
+                    byRepo[repo].push({ idx: i, project: p });
+                } else {
+                    noRepo.push({ idx: i, project: p });
+                }
+            }
+
+            // Sort repos by most recent session
+            var repoKeys = Object.keys(byRepo).sort(function(a, b) {
+                var aMax = 0, bMax = 0;
+                byRepo[a].forEach(function(it) {
+                    (it.project.sessions || []).forEach(function(s) {
+                        var t = new Date(s.lastModified).getTime();
+                        if (t > aMax) aMax = t;
+                    });
+                });
+                byRepo[b].forEach(function(it) {
+                    (it.project.sessions || []).forEach(function(s) {
+                        var t = new Date(s.lastModified).getTime();
+                        if (t > bMax) bMax = t;
+                    });
+                });
+                return bMax - aMax;
+            });
+
+            return { byRepo: byRepo, repoKeys: repoKeys, noRepo: noRepo };
+        }
+
+        function renderRepoView(repoData) {
+            var showTokens = document.getElementById('chkTokenUsage') && document.getElementById('chkTokenUsage').checked;
+            var html = '';
+
+            for (var ri = 0; ri < repoData.repoKeys.length; ri++) {
+                var repo = repoData.repoKeys[ri];
+                var items = repoData.byRepo[repo];
+                var treeId = 'repo-' + ri;
+
+                // Aggregate stats for the repo
+                var totalSessions = 0, totalSize = 0;
+                var allSessionIds = [];
+                items.forEach(function(it) {
+                    var sessions = it.project.sessions || [];
+                    totalSessions += sessions.length;
+                    sessions.forEach(function(s) {
+                        totalSize += s.sizeBytes || 0;
+                        allSessionIds.push(s.sessionId);
+                    });
+                });
+
+                html += '<div class="folder-tree-node">' +
+                    '<div class="folder-tree-label" onclick="toggleFolderTreeNode(\'' + treeId + '\',this)">' +
+                    '<span class="folder-tree-toggle" id="ftoggle-' + treeId + '">&#9660;</span>' +
+                    '<span class="folder-tree-icon">&#128230;</span>' +
+                    '<span class="folder-tree-name" title="' + escapeHtml(repo) + '">' + escapeHtml(repo) + '</span>' +
+                    '<span class="folder-tree-count">' + items.length + ' folder' + (items.length !== 1 ? 's' : '') +
+                    ' &middot; ' + totalSessions + ' sess &middot; ' + formatBytes(totalSize) + '</span>' +
+                    '</div>' +
+                    (showTokens ? '<div class="project-tokens" id="repo-tokens-' + ri + '" style="padding-left:42px;"></div>' : '') +
+                    '<div class="folder-tree-children" id="' + treeId + '">';
+
+                // Flat list of folders under this repo
+                for (var fi = 0; fi < items.length; fi++) {
+                    var it = items[fi];
+                    var idx = it.idx;
+                    var folderName = it.project.name || 'Unknown';
+                    var folderPath = it.project.cwd || it.project.path || '';
+                    html += '<div class="project-card" onclick="selectProject(' + idx + ')" data-idx="' + idx + '">' +
+                        '<div class="project-name">' + escapeHtml(folderName) + ' <span class="project-meta-inline" id="project-badges-' + idx + '"></span></div>' +
+                        '<div class="project-path" title="' + escapeHtml(folderPath) + '">' + escapeHtml(folderPath) + '</div>' +
+                        '<div class="project-meta" id="project-meta-' + idx + '"></div>' +
+                        '<div id="project-tokens-' + idx + '"></div>' +
+                        '</div>';
+                }
+
+                html += '</div></div>';
+            }
+
+            // Projects with no repository
+            if (repoData.noRepo.length > 0) {
+                var noRepoId = 'repo-norepo';
+                html += '<div class="folder-tree-node">' +
+                    '<div class="folder-tree-label" onclick="toggleFolderTreeNode(\'' + noRepoId + '\',this)">' +
+                    '<span class="folder-tree-toggle" id="ftoggle-' + noRepoId + '">&#9660;</span>' +
+                    '<span class="folder-tree-icon">&#128193;</span>' +
+                    '<span class="folder-tree-name">No Repository</span>' +
+                    '<span class="folder-tree-count">' + repoData.noRepo.length + ' folder' + (repoData.noRepo.length !== 1 ? 's' : '') + '</span>' +
+                    '</div>' +
+                    '<div class="folder-tree-children" id="' + noRepoId + '">';
+
+                for (var ni = 0; ni < repoData.noRepo.length; ni++) {
+                    var nit = repoData.noRepo[ni];
+                    var nidx = nit.idx;
+                    var nPath = nit.project.cwd || nit.project.path || '';
+                    html += '<div class="project-card" onclick="selectProject(' + nidx + ')" data-idx="' + nidx + '">' +
+                        '<div class="project-name">' + escapeHtml(nit.project.name || 'Unknown') + ' <span id="project-badges-' + nidx + '"></span></div>' +
+                        '<div class="project-path" title="' + escapeHtml(nPath) + '">' + escapeHtml(nPath) + '</div>' +
+                        '<div class="project-meta" id="project-meta-' + nidx + '"></div>' +
+                        '<div id="project-tokens-' + nidx + '"></div>' +
+                        '</div>';
+                }
+
+                html += '</div></div>';
+            }
+
+            return html;
+        }
+
+        var _lastRepoData = null;
+
+        function updateRepoTokenSummaries() {
+            if (!_lastRepoData) return;
+            var showTokens = document.getElementById('chkTokenUsage') && document.getElementById('chkTokenUsage').checked;
+            if (!showTokens) return;
+
+            for (var ri = 0; ri < _lastRepoData.repoKeys.length; ri++) {
+                var el = document.getElementById('repo-tokens-' + ri);
+                if (!el) continue;
+                var items = _lastRepoData.byRepo[_lastRepoData.repoKeys[ri]];
+                var allSessions = [];
+                items.forEach(function(it) { allSessions = allSessions.concat(it.project.sessions || []); });
+                el.innerHTML = renderProjectTokenSummary(allSessions);
+            }
+        }
+
         // --- Project Browser ---
         async function loadProjects() {
             var list = document.getElementById('projectList');
+            _lastRepoData = null;
             try {
                 var resp = await fetch('/api/transcripts/projects');
                 if (!resp.ok) throw new Error('Failed to load projects');
@@ -617,23 +752,30 @@
                     return bMax - aMax;
                 });
 
-                // Pass 1: render folder tree structure immediately
-                folderTreeIdCounter = 0;
-                var tree = buildFolderTree(allProjects);
-                var treeHtml = '';
-                if (tree.commonPrefix) {
-                    treeHtml += '<div class="folder-common-prefix" title="' + escapeHtml(tree.commonPrefix) + '">' + escapeHtml(tree.commonPrefix) + '</div>';
+                var useRepo = document.getElementById('chkRepoView') && document.getElementById('chkRepoView').checked;
+
+                if (useRepo) {
+                    // Repo view: flat list grouped by repository
+                    _lastRepoData = buildRepoView(allProjects);
+                    list.innerHTML = renderRepoView(_lastRepoData);
+                } else {
+                    // Folder tree view
+                    folderTreeIdCounter = 0;
+                    var tree = buildFolderTree(allProjects);
+                    var treeHtml = '';
+                    if (tree.commonPrefix) {
+                        treeHtml += '<div class="folder-common-prefix" title="' + escapeHtml(tree.commonPrefix) + '">' + escapeHtml(tree.commonPrefix) + '</div>';
+                    }
+                    treeHtml += '<div class="folder-tree">' + renderFolderTreeNode(tree.root, 0) + '</div>';
+                    list.innerHTML = treeHtml;
                 }
-
-                treeHtml += '<div class="folder-tree">' + renderFolderTreeNode(tree.root, 0) + '</div>';
-
-                list.innerHTML = treeHtml;
 
                 // Pass 2: fill in session counts, sizes, badges asynchronously
                 requestAnimationFrame(function() {
                     for (var i = 0; i < allProjects.length; i++) {
                         fillProjectMeta(i);
                     }
+                    if (useRepo) updateRepoTokenSummaries();
                 });
             } catch (err) {
                 list.innerHTML = '<div class="empty-state"><p>Error: ' + escapeHtml(err.message) + '</p></div>';
@@ -758,6 +900,18 @@
             toggleEl.innerHTML = isHidden ? '&#9660;' : '&#9654;';
         }
 
+        function findSessionFilePath(sessionId) {
+            for (var i = 0; i < allProjects.length; i++) {
+                var sessions = allProjects[i].sessions || [];
+                for (var j = 0; j < sessions.length; j++) {
+                    if (sessions[j].sessionId === sessionId && sessions[j].filePath) {
+                        return sessions[j].filePath;
+                    }
+                }
+            }
+            return null;
+        }
+
         // --- Transcript Viewer ---
         async function viewTranscript(sessionId) {
             // Close any existing SSE connection
@@ -768,6 +922,17 @@
             document.getElementById('transcriptView').style.display = '';
             document.getElementById('transcriptSessionId').textContent = sessionId;
             document.getElementById('transcriptContent').innerHTML = '<div class="empty-state"><p>Loading transcript...</p></div>';
+
+            // Show session file path if available
+            var filePathEl = document.getElementById('transcriptFilePath');
+            var sessionFilePath = findSessionFilePath(sessionId);
+            if (sessionFilePath) {
+                filePathEl.textContent = sessionFilePath;
+                filePathEl.title = sessionFilePath;
+                filePathEl.style.display = '';
+            } else {
+                filePathEl.style.display = 'none';
+            }
 
             try {
                 var resp = await fetch('/api/claude-logs/transcript/' + encodeURIComponent(sessionId));
@@ -1808,17 +1973,23 @@
             if (chkTokenUsage) {
                 chkTokenUsage.addEventListener('change', function() {
                     saveFilter('cpa-transcript-tokens', this.checked);
-                    // Re-render the active project's session list
-                    var activeCard = document.querySelector('.project-card.active');
-                    if (activeCard) selectProject(parseInt(activeCard.dataset.idx));
-                    // Clear or show project token summaries
-                    if (!this.checked) {
-                        for (var pi = 0; pi < allProjects.length; pi++) {
-                            var el = document.getElementById('project-tokens-' + pi);
-                            if (el) el.innerHTML = '';
-                        }
+                    var useRepo = document.getElementById('chkRepoView') && document.getElementById('chkRepoView').checked;
+                    if (useRepo) {
+                        // Repo view needs re-render to add/remove repo-tokens elements
+                        loadProjects();
                     } else {
-                        updateProjectTokenSummary();
+                        // Re-render the active project's session list
+                        var activeCard = document.querySelector('.project-card.active');
+                        if (activeCard) selectProject(parseInt(activeCard.dataset.idx));
+                        // Clear or show project token summaries
+                        if (!this.checked) {
+                            for (var pi = 0; pi < allProjects.length; pi++) {
+                                var el = document.getElementById('project-tokens-' + pi);
+                                if (el) el.innerHTML = '';
+                            }
+                        } else {
+                            updateProjectTokenSummary();
+                        }
                     }
                 });
             }

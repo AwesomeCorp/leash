@@ -178,22 +178,31 @@ class WindowsNotificationService:
     """Windows notification service using windows-toasts for rich notifications.
 
     Supports:
-    - Passive alerts (informational, no buttons) for score <= 0
-    - Interactive toasts with Approve/Deny buttons for uncertain scores
+    - Passive alerts (informational, no buttons) via native toasts
+    - Interactive decisions via custom tkinter popup with colored buttons
     """
 
     def __init__(self, tray_service: WindowsTrayService) -> None:
         self._tray = tray_service
         self._toaster: Any | None = None
+        self._popup_thread: Any | None = None
         if HAS_TOASTS:
             try:
                 self._toaster = InteractableWindowsToaster("Leash")
             except Exception:
                 logger.debug("Failed to create Windows toaster", exc_info=True)
+        # Start the custom popup thread for interactive decisions
+        try:
+            from leash.services.tray.windows_popup import PopupThread
+
+            self._popup_thread = PopupThread()
+            self._popup_thread.start()
+        except Exception:
+            logger.debug("Failed to start popup thread", exc_info=True)
 
     @property
     def supports_interactive(self) -> bool:
-        return self._toaster is not None
+        return self._popup_thread is not None or self._toaster is not None
 
     def _make_audio(self, info: NotificationInfo) -> Any:
         """Create ToastAudio based on notification sound setting."""
@@ -227,11 +236,20 @@ class WindowsNotificationService:
                 logger.debug("Failed to show Windows notification", exc_info=True)
 
     async def show_interactive(self, info: NotificationInfo, timeout: float) -> TrayDecision | None:
-        """Show a toast with Approve/Deny/Ignore buttons and rich detail.
+        """Show a custom popup with colored Approve/Deny/Ignore buttons.
 
-        Clicking the toast body (outside buttons) does NOT dismiss the decision.
-        Only explicit button clicks resolve the future.
+        Uses a tkinter popup on a dedicated thread for full control over layout
+        and button colours.  Falls back to native toast if the popup thread is
+        unavailable.
         """
+        # Prefer the custom popup (colourful, larger, richer)
+        if self._popup_thread is not None:
+            try:
+                return await self._popup_thread.request_decision(info, timeout)
+            except Exception:
+                logger.debug("Custom popup failed, trying toast fallback", exc_info=True)
+
+        # Fallback: native toast (no custom colours, but functional)
         if self._toaster is None:
             return None
 
@@ -286,3 +304,11 @@ class WindowsNotificationService:
         except Exception:
             logger.debug("Failed to show interactive Windows toast", exc_info=True)
             return None
+
+    def stop(self) -> None:
+        """Shut down the popup thread."""
+        if self._popup_thread is not None:
+            try:
+                self._popup_thread.stop()
+            except Exception:
+                pass

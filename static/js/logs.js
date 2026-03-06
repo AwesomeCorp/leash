@@ -15,6 +15,9 @@ var chipDefinitions = {
 };
 
 var activeChipFilters = {};
+var chipCounts = {};        // { group: { value: count } }
+var chipGroupExpanded = {}; // { group: true/false }
+var CHIP_VISIBLE_LIMIT = 5;
 
 function initChipFilters() {
     Object.keys(chipDefinitions).forEach(function(group) {
@@ -27,6 +30,8 @@ function initChipFilters() {
             // Default: all selected
             activeChipFilters[group] = new Set(chipDefinitions[group]);
         }
+        if (!chipCounts[group]) chipCounts[group] = {};
+        chipGroupExpanded[group] = false;
         renderChipGroup(group);
     });
 }
@@ -36,16 +41,46 @@ function renderChipGroup(group) {
     if (!container) return;
     var values = chipDefinitions[group];
     var active = activeChipFilters[group];
+    var counts = chipCounts[group] || {};
+    var expanded = chipGroupExpanded[group];
 
-    var html = values.map(function(v) {
+    // Sort by count descending (most frequent first), then alphabetical
+    var sorted = values.slice().sort(function(a, b) {
+        var ca = counts[a] || 0, cb = counts[b] || 0;
+        if (cb !== ca) return cb - ca;
+        return a.localeCompare(b);
+    });
+
+    var hiddenCount = Math.max(0, sorted.length - CHIP_VISIBLE_LIMIT);
+    var html = '';
+    for (var i = 0; i < sorted.length; i++) {
+        var v = sorted[i];
         var isActive = active.has(v);
-        return '<span class="filter-chip ' + (isActive ? 'active' : '') + '" data-group="' + group + '" data-value="' + escapeHtml(v) + '" onclick="toggleChip(\'' + group + '\',\'' + escapeHtml(v) + '\')">' + escapeHtml(v) + '</span>';
-    }).join('');
+        var isHidden = !expanded && i >= CHIP_VISIBLE_LIMIT;
+        var countLabel = counts[v] ? ' (' + counts[v] + ')' : '';
+        html += '<span class="filter-chip ' + (isActive ? 'active' : '') + (isHidden ? ' hidden-chip' : '') +
+            '" data-group="' + group + '" data-value="' + escapeHtml(v) +
+            '" onclick="toggleChip(\'' + group + '\',\'' + escapeHtml(v).replace(/'/g, "\\'") + '\')">' +
+            escapeHtml(v) + countLabel + '</span>';
+    }
 
     var allActive = active.size === values.length;
     html += '<span class="filter-chip toggle-all ' + (allActive ? 'active' : '') + '" onclick="toggleAllChips(\'' + group + '\')">Toggle All</span>';
 
+    if (hiddenCount > 0) {
+        if (expanded) {
+            html += '<span class="filter-chip show-more" onclick="toggleChipGroupExpand(\'' + group + '\')">Show less</span>';
+        } else {
+            html += '<span class="filter-chip show-more" onclick="toggleChipGroupExpand(\'' + group + '\')">+' + hiddenCount + ' more</span>';
+        }
+    }
+
     container.innerHTML = html;
+}
+
+function toggleChipGroupExpand(group) {
+    chipGroupExpanded[group] = !chipGroupExpanded[group];
+    renderChipGroup(group);
 }
 
 function toggleChip(group, value) {
@@ -107,17 +142,31 @@ var chipGroupToLogField = {
 function updateChipDefinitionsFromLogs(logs) {
     if (!Array.isArray(logs)) return;
     var changed = {};
+
+    // Reset counts and recompute from current log set
+    var groups = Object.keys(chipGroupToLogField);
+    for (var g = 0; g < groups.length; g++) {
+        chipCounts[groups[g]] = {};
+    }
+
     for (var i = 0; i < logs.length; i++) {
         var log = logs[i];
-        var groups = Object.keys(chipGroupToLogField);
         for (var g = 0; g < groups.length; g++) {
             var group = groups[g];
             if (!chipDefinitions[group] || !activeChipFilters[group]) continue;
             var field = chipGroupToLogField[group];
             var val = log[field];
-            if (val && chipDefinitions[group].indexOf(val) === -1) {
+            if (!val) continue;
+            // Count occurrences
+            if (!chipCounts[group]) chipCounts[group] = {};
+            chipCounts[group][val] = (chipCounts[group][val] || 0) + 1;
+            // Discover new values
+            if (chipDefinitions[group].indexOf(val) === -1) {
                 chipDefinitions[group].push(val);
                 activeChipFilters[group].add(val);
+                changed[group] = true;
+            } else {
+                // Still re-render to update counts
                 changed[group] = true;
             }
         }

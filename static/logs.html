@@ -6,7 +6,7 @@
     <title>Logs - Leash</title>
     <link rel="stylesheet" href="/css/styles.css">
     <style>
-        .chip-filter-row { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 8px; align-items: flex-start; }
+        .chip-filter-row { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
         .chip-group { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
         .chip-group-label { font-size: 0.75em; font-weight: 600; color: var(--text-faint, #888); text-transform: uppercase; letter-spacing: 0.5px; white-space: nowrap; }
         .filter-chip {
@@ -16,6 +16,8 @@
         }
         .filter-chip.active { background: var(--accent-primary, #2563eb); color: #fff; border-color: var(--accent-primary, #2563eb); }
         .filter-chip.toggle-all { font-weight: 600; }
+        .filter-chip.show-more { font-style: italic; opacity: 0.85; }
+        .filter-chip.hidden-chip { display: none; }
     </style>
 </head>
 <body>
