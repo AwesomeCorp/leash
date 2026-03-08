@@ -48,7 +48,11 @@ async def get_stats(request: Request) -> JSONResponse:
             if last_activity is not None and last_activity.timestamp() > one_hour_ago:
                 active_count += 1
 
-        today_events = [e for e in all_events if getattr(e, "timestamp", datetime.min).date() == today]
+        today_events = []
+        for e in all_events:
+            ts = getattr(e, "timestamp", None)
+            if ts is not None and ts.date() == today:
+                today_events.append(e)
         auto_approved = sum(1 for e in today_events if getattr(e, "decision", "") == "auto-approved")
         denied = sum(1 for e in today_events if getattr(e, "decision", "") == "denied")
 
@@ -198,11 +202,13 @@ async def get_sessions(request: Request) -> JSONResponse:
             denied_count = sum(1 for e in history if getattr(e, "decision", "") == "denied")
             last_tool = getattr(history[-1], "tool_name", None) if history else None
 
+            start_time = getattr(s, "start_time", None)
+            last_activity = getattr(s, "last_activity", None)
             result.append(
                 {
                     "sessionId": getattr(s, "session_id", ""),
-                    "startTime": getattr(s, "start_time", datetime.now(timezone.utc)).isoformat(),
-                    "lastActivity": getattr(s, "last_activity", datetime.now(timezone.utc)).isoformat(),
+                    "startTime": start_time.isoformat() if start_time else None,
+                    "lastActivity": last_activity.isoformat() if last_activity else None,
                     "workingDirectory": getattr(s, "working_directory", None),
                     "eventCount": len(history),
                     "approvedCount": approved_count,
@@ -211,8 +217,8 @@ async def get_sessions(request: Request) -> JSONResponse:
                 }
             )
 
-        # Sort by last activity descending
-        result.sort(key=lambda x: x["lastActivity"], reverse=True)
+        # Sort by last activity descending (sessions without timestamps go last)
+        result.sort(key=lambda x: x["lastActivity"] or "", reverse=True)
         return JSONResponse(content=result)
     except Exception as exc:
         logger.error("Failed to retrieve sessions: %s", exc)
@@ -236,9 +242,10 @@ async def get_recent_activity(
         for s in sessions:
             session_id = getattr(s, "session_id", "")
             for e in getattr(s, "conversation_history", []):
+                evt_ts = getattr(e, "timestamp", None)
                 events.append(
                     {
-                        "timestamp": getattr(e, "timestamp", datetime.now(timezone.utc)).isoformat(),
+                        "timestamp": evt_ts.isoformat() if evt_ts else None,
                         "type": getattr(e, "type", ""),
                         "toolName": getattr(e, "tool_name", None),
                         "toolInput": getattr(e, "tool_input", None),
@@ -255,7 +262,7 @@ async def get_recent_activity(
                 )
 
         # Sort by timestamp descending and take limit
-        events.sort(key=lambda x: x["timestamp"], reverse=True)
+        events.sort(key=lambda x: x["timestamp"] or "", reverse=True)
         return JSONResponse(content=events[:limit])
     except Exception as exc:
         logger.error("Failed to retrieve recent activity: %s", exc)
@@ -284,7 +291,7 @@ async def get_trends(
         trends = []
         for i in range(days - 1, -1, -1):
             day = today - timedelta(days=i)
-            day_events = [e for e in all_events if getattr(e, "timestamp", datetime.min).date() == day]
+            day_events = [e for e in all_events if getattr(e, "timestamp", None) is not None and e.timestamp.date() == day]
             trends.append(
                 {
                     "date": day.isoformat(),

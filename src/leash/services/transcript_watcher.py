@@ -174,7 +174,8 @@ class TranscriptWatcher:
             pass
 
     def _notify(self, event: TranscriptEvent) -> None:
-        for cb in self._subscribers:
+        # Snapshot to avoid RuntimeError if a callback modifies the list.
+        for cb in list(self._subscribers):
             try:
                 cb(event)
             except Exception:
@@ -332,7 +333,9 @@ class TranscriptWatcher:
     def _resolve_client_for_path(self, file_path: str, dir_to_client: dict[str, Any]) -> Any | None:
         """Resolve which harness client owns a given file path."""
         for directory, client in dir_to_client.items():
-            if file_path.startswith(directory):
+            # Use os.path for proper directory containment check (avoids
+            # false positives like "/foo/bar" matching "/foo/barbaz").
+            if file_path.startswith(directory + os.sep) or file_path == directory:
                 return client
         # Fallback: first client (typically claude)
         return self._harness_clients[0] if self._harness_clients else None

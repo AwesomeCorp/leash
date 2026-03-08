@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 
 import aiofiles
+from pydantic import ValidationError
 
 from leash.exceptions import ConfigurationException
 from leash.models.configuration import Configuration, HookEventConfig
@@ -196,6 +197,10 @@ class ConfigurationManager:
                 raise ConfigurationException(
                     f"Cannot load configuration: invalid JSON at {self._config_path}"
                 ) from e
+            except ValidationError as e:
+                raise ConfigurationException(
+                    f"Cannot load configuration: schema validation error at {self._config_path}: {e}"
+                ) from e
             except OSError as e:
                 raise ConfigurationException(
                     f"Cannot load configuration from {self._config_path}"
@@ -206,13 +211,15 @@ class ConfigurationManager:
         return self._configuration
 
     async def save(self) -> None:
-        """Save the current configuration to disk."""
+        """Save the current configuration to disk atomically."""
         try:
             self._config_path.parent.mkdir(parents=True, exist_ok=True)
             data = self._configuration.model_dump(by_alias=True)
             raw = json.dumps(data, indent=2)
-            async with aiofiles.open(self._config_path, "w") as f:
+            tmp_path = self._config_path.with_suffix(".tmp")
+            async with aiofiles.open(tmp_path, "w") as f:
                 await f.write(raw)
+            tmp_path.replace(self._config_path)
         except PermissionError as e:
             raise ConfigurationException(
                 f"Cannot save configuration to {self._config_path}: Permission denied"

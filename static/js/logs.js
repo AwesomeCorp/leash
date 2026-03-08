@@ -57,11 +57,10 @@ function renderChipGroup(group) {
         var v = sorted[i];
         var isActive = active.has(v);
         var isHidden = !expanded && i >= CHIP_VISIBLE_LIMIT;
-        var countLabel = counts[v] ? ' (' + counts[v] + ')' : '';
         html += '<span class="filter-chip ' + (isActive ? 'active' : '') + (isHidden ? ' hidden-chip' : '') +
             '" data-group="' + group + '" data-value="' + escapeHtml(v) +
             '" onclick="toggleChip(\'' + group + '\',\'' + escapeHtml(v).replace(/'/g, "\\'") + '\')">' +
-            escapeHtml(v) + countLabel + '</span>';
+            escapeHtml(v) + '</span>';
     }
 
     var allActive = active.size === values.length;
@@ -94,7 +93,7 @@ function toggleChip(group, value) {
     renderChipGroup(group);
     lastLogTimestamp = null;
     lastLogCount = 0;
-    loadLogs(true);
+    loadLogsUntilFilled();
 }
 
 function toggleAllChips(group) {
@@ -111,7 +110,7 @@ function toggleAllChips(group) {
     renderChipGroup(group);
     lastLogTimestamp = null;
     lastLogCount = 0;
-    loadLogs(true);
+    loadLogsUntilFilled();
 }
 
 function saveChipState(group) {
@@ -295,6 +294,34 @@ async function loadLogs(forceFullRender) {
         } else {
             console.error('Incremental log refresh failed:', error);
         }
+    }
+}
+
+var _fillPollTimer = null;
+
+async function loadLogsUntilFilled() {
+    // Cancel any previous fill-poll
+    if (_fillPollTimer) { clearTimeout(_fillPollTimer); _fillPollTimer = null; }
+
+    await loadLogs(true);
+
+    var limit = parseInt(document.getElementById('filterLimit')?.value || '100', 10);
+    if (lastLogCount > 0 && lastLogCount < limit) {
+        // Not enough entries yet — poll a few more times to pick up new events
+        var attempts = 0;
+        var maxAttempts = 5;
+        function pollMore() {
+            attempts++;
+            if (attempts > maxAttempts) return;
+            _fillPollTimer = setTimeout(async function() {
+                var prevCount = lastLogCount;
+                await loadLogs(true);
+                // Stop if we filled up, or no new entries appeared
+                if (lastLogCount >= limit || lastLogCount === prevCount) return;
+                pollMore();
+            }, 1500);
+        }
+        pollMore();
     }
 }
 
@@ -523,8 +550,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     loadLogs(true);
 
     // Dropdown filter changes
-    document.getElementById('filterSession')?.addEventListener('change', function() { saveFilter('cpa-logs-filter-session', this.value); lastLogTimestamp = null; lastLogCount = 0; loadLogs(true); });
-    document.getElementById('filterLimit')?.addEventListener('change', function() { saveFilter('cpa-logs-filter-limit', this.value); lastLogTimestamp = null; lastLogCount = 0; loadLogs(true); });
+    document.getElementById('filterSession')?.addEventListener('change', function() { saveFilter('cpa-logs-filter-session', this.value); lastLogTimestamp = null; lastLogCount = 0; loadLogsUntilFilled(); });
+    document.getElementById('filterLimit')?.addEventListener('change', function() { saveFilter('cpa-logs-filter-limit', this.value); lastLogTimestamp = null; lastLogCount = 0; loadLogsUntilFilled(); });
 
     if (chkAutoScroll) {
         chkAutoScroll.addEventListener('change', function() { saveFilter('cpa-logs-autoscroll', this.checked); });
@@ -576,7 +603,7 @@ async function replayLogEntry(btn) {
 
         if (result.success) {
             if (statusEl) {
-                statusEl.innerHTML = `<span class="replay-result">Score: <strong>${result.safetyScore}</strong> | Category: <strong>${result.category}</strong> | ${result.elapsedMs}ms</span>`;
+                statusEl.innerHTML = `<span class="replay-result">Score: <strong>${escapeHtml(String(result.safetyScore))}</strong> | Category: <strong>${escapeHtml(String(result.category))}</strong> | ${escapeHtml(String(result.elapsedMs))}ms</span>`;
             }
             Toast.show('Replay Complete', `Score: ${result.safetyScore} (${result.category}) in ${result.elapsedMs}ms`, 'success');
         } else {

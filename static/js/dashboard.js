@@ -294,7 +294,7 @@ function renderBarChart(trends) {
         const dayLabel = new Date(t.date).toLocaleDateString(undefined, { weekday: 'short' });
 
         return `
-            <div class="bar-group" title="${t.date}: ${t.approved} approved, ${t.denied} denied">
+            <div class="bar-group" title="${escapeHtml(t.date)}: ${t.approved} approved, ${t.denied} denied">
                 <div class="bar-stack">
                     <div class="bar denied" style="height: ${deniedH}%"></div>
                     <div class="bar approved" style="height: ${approvedH}%"></div>
@@ -522,7 +522,7 @@ function loadInsights() {
             list.querySelectorAll('.insight-dismiss').forEach(function (btn) {
                 btn.addEventListener('click', function () {
                     const id = this.getAttribute('data-id');
-                    fetchApi('/api/insights/dismiss/' + id, { method: 'POST' })
+                    fetchApi('/api/insights/dismiss/' + encodeURIComponent(id), { method: 'POST' })
                         .then(function () {
                             btn.closest('.insight-item').remove();
                             const current = parseInt(countEl.textContent) || 0;
@@ -617,6 +617,24 @@ function initQuickActions() {
             }
         });
     }
+
+    const btnShutdown = document.getElementById('btnShutdown');
+    if (btnShutdown) {
+        btnShutdown.addEventListener('click', function () {
+            if (!confirm('Are you sure you want to shut down Leash? Hooks will be uninstalled and all sessions will stop being monitored.')) {
+                return;
+            }
+            btnShutdown.disabled = true;
+            fetchApi('/api/shutdown', { method: 'POST' })
+                .then(function () {
+                    Toast.show('Shutdown', 'Leash is shutting down...', 'info');
+                })
+                .catch(function () {
+                    // Connection will likely be lost — that's expected
+                    Toast.show('Shutdown', 'Leash is shutting down...', 'info');
+                });
+        });
+    }
 }
 
 function highlightProfile(key) {
@@ -637,6 +655,16 @@ async function loadHooksStatus() {
         updateHooksUI(data.installed);
         updateEnforcementModeUI(mode);
         updateCopilotHooksUI(data.copilot);
+
+        // Show warning banner if hooks not installed because user previously uninstalled them
+        var banner = document.getElementById('hooksWarningBanner');
+        if (banner) {
+            if (!data.installed && data.hooksUserUninstalled) {
+                banner.style.display = '';
+            } else {
+                banner.style.display = 'none';
+            }
+        }
     } catch {
         // Service may not support hooks endpoint yet
     }
@@ -724,6 +752,22 @@ function updateCopilotHooksUI(copilotStatus) {
 }
 
 function initHooksControls() {
+    var btnWarningInstall = document.getElementById('hooksWarningInstall');
+    if (btnWarningInstall) {
+        btnWarningInstall.addEventListener('click', function () {
+            btnWarningInstall.disabled = true;
+            fetchApi('/api/hooks/install', { method: 'POST' })
+                .then(function (data) {
+                    Toast.show('Hooks', data.message, 'success');
+                    loadHooksStatus();
+                })
+                .catch(function (err) {
+                    Toast.show('Hooks Error', 'Failed: ' + err.message, 'danger');
+                    btnWarningInstall.disabled = false;
+                });
+        });
+    }
+
     var btnToggleHooks = document.getElementById('btnToggleHooks');
 
     if (btnToggleHooks) {
@@ -835,8 +879,10 @@ document.addEventListener('DOMContentLoaded', () => {
 document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
         clearInterval(refreshInterval);
+        refreshInterval = null;
     } else {
         refreshData();
+        if (refreshInterval) clearInterval(refreshInterval);
         refreshInterval = setInterval(refreshData, 30000);
     }
 });

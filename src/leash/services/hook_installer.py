@@ -78,6 +78,11 @@ class HookInstaller:
             if not has_enabled:
                 continue
 
+            # Validate event name to prevent shell injection via config
+            if not event_name.isalnum() and not all(c.isalnum() or c == '_' for c in event_name):
+                logger.warning("Skipping hook event with invalid name: %s", event_name)
+                continue
+
             arr: list[Any] = hooks.get(event_name, [])
             if event_name == "SessionStart":
                 command = self._build_session_start_command()
@@ -153,10 +158,12 @@ class HookInstaller:
         return {}
 
     def _write_settings(self, doc: dict[str, Any]) -> None:
-        """Write settings.json to disk."""
+        """Write settings.json to disk atomically."""
         self._settings_path.parent.mkdir(parents=True, exist_ok=True)
         raw = json.dumps(doc, indent=2)
-        self._settings_path.write_text(raw, encoding="utf-8")
+        tmp_path = self._settings_path.with_suffix(".tmp")
+        tmp_path.write_text(raw, encoding="utf-8")
+        tmp_path.replace(self._settings_path)
 
     def _contains_our_hooks(self, hooks: dict[str, Any]) -> bool:
         """Check if any hook entry contains our marker."""

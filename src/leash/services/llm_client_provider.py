@@ -15,6 +15,7 @@ from leash.services.claude_cli_client import ClaudeCliClient
 from leash.services.copilot_cli_client import CopilotCliClient
 from leash.services.generic_rest_client import GenericRestClient
 from leash.services.persistent_claude_client import PersistentClaudeClient
+from leash.services.persistent_copilot_client import PersistentCopilotClient
 
 if TYPE_CHECKING:
     from leash.config import ConfigurationManager
@@ -80,6 +81,7 @@ class LLMClientProvider:
             "claude-cli": self._create_claude_cli_client,
             "claude-persistent": self._create_persistent_claude_client,
             "copilot-cli": self._create_copilot_cli_client,
+            "copilot-persistent": self._create_persistent_copilot_client,
             "generic-rest": self._create_generic_rest_client,
         }
 
@@ -112,6 +114,13 @@ class LLMClientProvider:
 
     def _create_copilot_cli_client(self, config: LlmConfig) -> LLMClient:
         return CopilotCliClient(  # type: ignore[return-value]
+            config=config,
+            config_manager=self._config_manager,
+            terminal_output=self._terminal_output,
+        )
+
+    def _create_persistent_copilot_client(self, config: LlmConfig) -> LLMClient:
+        return PersistentCopilotClient(  # type: ignore[return-value]
             config=config,
             config_manager=self._config_manager,
             terminal_output=self._terminal_output,
@@ -183,7 +192,9 @@ class LLMClientProvider:
         """
         provider = self._config_manager.get_configuration().llm.provider or "anthropic-api"
 
-        if session_id is None or provider != "claude-persistent":
+        _persistent_providers = {"claude-persistent", "copilot-persistent"}
+
+        if session_id is None or provider not in _persistent_providers:
             return await self.get_client()
 
         async with self._session_lock:
@@ -193,13 +204,12 @@ class LLMClientProvider:
                 return entry.client
 
             config = self._config_manager.get_configuration().llm
-            client: LLMClient = PersistentClaudeClient(  # type: ignore[assignment]
-                config=config,
-                config_manager=self._config_manager,
-                terminal_output=self._terminal_output,
-            )
+            factory = self._factories.get(provider)
+            if factory is None:
+                return await self.get_client()
+            client: LLMClient = factory(config)
             self._session_clients[session_id] = _SessionClientEntry(client)
-            logger.info("Created per-session persistent client for session %s", session_id)
+            logger.info("Created per-session persistent %s client for session %s", provider, session_id)
             return client
 
     async def _periodic_cleanup(self) -> None:

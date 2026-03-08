@@ -168,7 +168,7 @@ class TestConfiguration:
         config = Configuration()
         assert config.llm.provider == "claude-persistent"
         assert config.llm.model == "opus"
-        assert config.llm.timeout == 15000
+        assert config.llm.timeout == 30000
         assert config.server.port == 5050
         assert config.enforcement_enabled is False
 

@@ -132,7 +132,7 @@ function renderConfig(config) {
             <div class="config-field">
                 <label class="config-label" for="cfg-provider">
                     Provider
-                    <small>LLM backend used for analysis</small>
+                    <small>LLM backend for safety analysis. Persistent providers keep a CLI process alive between requests for lower latency.</small>
                 </label>
                 <select id="cfg-provider" class="config-input"
                     data-path="llm.provider" aria-label="LLM provider"
@@ -140,14 +140,15 @@ function renderConfig(config) {
                     <option value="anthropic-api" ${(config.llm?.provider || 'anthropic-api') === 'anthropic-api' ? 'selected' : ''}>Anthropic API (Direct)</option>
                     <option value="claude-cli" ${config.llm?.provider === 'claude-cli' ? 'selected' : ''}>Claude Code CLI (One-shot)</option>
                     <option value="claude-persistent" ${config.llm?.provider === 'claude-persistent' ? 'selected' : ''}>Claude Code CLI (Persistent)</option>
-                    <option value="copilot-cli" ${config.llm?.provider === 'copilot-cli' ? 'selected' : ''}>GitHub Copilot CLI</option>
+                    <option value="copilot-cli" ${config.llm?.provider === 'copilot-cli' ? 'selected' : ''}>GitHub Copilot CLI (One-shot)</option>
+                    <option value="copilot-persistent" ${config.llm?.provider === 'copilot-persistent' ? 'selected' : ''}>GitHub Copilot CLI (Persistent)</option>
                     <option value="generic-rest" ${config.llm?.provider === 'generic-rest' ? 'selected' : ''}>Generic REST API</option>
                 </select>
             </div>
             <div class="config-field">
                 <label class="config-label" for="cfg-model">
                     Model
-                    <small>Model identifier for the LLM</small>
+                    <small>Model name or alias (e.g. "opus", "sonnet", "haiku") — shorthand names are resolved to full model IDs automatically</small>
                 </label>
                 <input id="cfg-model" class="config-input" type="text"
                     value="${escapeAttr(config.llm?.model || 'sonnet')}"
@@ -156,7 +157,7 @@ function renderConfig(config) {
             <div class="config-field">
                 <label class="config-label" for="cfg-timeout">
                     Timeout (ms)
-                    <small>Maximum wait time for LLM responses</small>
+                    <small>Maximum wait time per LLM query including prefix/suffix messages. Increase if queries time out frequently.</small>
                 </label>
                 <input id="cfg-timeout" class="config-input" type="number"
                     value="${config.llm?.timeout || 30000}" min="1000" max="300000"
@@ -250,29 +251,30 @@ function renderConfig(config) {
             <div class="config-field" style="margin-top: 16px; border-top: 1px solid var(--border-color); padding-top: 16px;">
                 <label class="config-label" for="cfg-system-prompt">
                     System Prompt
-                    <small>System prompt sent to the LLM for safety analysis</small>
+                    <small>System-level instructions passed via --system-prompt to the CLI or as the system message for API providers. Defines how the LLM should evaluate safety.</small>
                 </label>
                 <textarea id="cfg-system-prompt" class="config-input" rows="4"
                     data-path="llm.systemPrompt" aria-label="System prompt"
                     style="width: 350px; font-family: var(--font-mono); font-size: 12px;">${escapeHtml(config.llm?.systemPrompt || '')}</textarea>
             </div>
             <div class="config-field">
-                <label class="config-label" for="cfg-prompt-prefix">
-                    Prompt Prefix
-                    <small>Text prepended before each hook analysis prompt</small>
+                <label class="config-label" for="cfg-prompt-prefixes">
+                    Prompt Prefixes
+                    <small>Messages sent to the persistent CLI before each prompt (one per line). With ACP mode, fresh sessions are created per query so no prefix is needed by default.</small>
                 </label>
-                <textarea id="cfg-prompt-prefix" class="config-input" rows="2"
-                    data-path="llm.promptPrefix" aria-label="Prompt prefix"
-                    style="width: 350px; font-family: var(--font-mono); font-size: 12px;">${escapeHtml(config.llm?.promptPrefix || '')}</textarea>
+                <textarea id="cfg-prompt-prefixes" class="config-input" rows="2"
+                    data-path="llm.promptPrefixes" data-type="string-array" aria-label="Prompt prefixes"
+                    placeholder=""
+                    style="width: 350px; font-family: var(--font-mono); font-size: 12px;">${escapeHtml((config.llm?.promptPrefixes || []).join('\n'))}</textarea>
             </div>
             <div class="config-field">
-                <label class="config-label" for="cfg-prompt-suffix">
-                    Prompt Suffix
-                    <small>Text appended after each hook analysis prompt</small>
+                <label class="config-label" for="cfg-prompt-suffixes">
+                    Prompt Suffixes
+                    <small>Messages sent to the persistent CLI after each prompt (one per line). Useful for post-processing commands.</small>
                 </label>
-                <textarea id="cfg-prompt-suffix" class="config-input" rows="2"
-                    data-path="llm.promptSuffix" aria-label="Prompt suffix"
-                    style="width: 350px; font-family: var(--font-mono); font-size: 12px;">${escapeHtml(config.llm?.promptSuffix || '')}</textarea>
+                <textarea id="cfg-prompt-suffixes" class="config-input" rows="2"
+                    data-path="llm.promptSuffixes" data-type="string-array" aria-label="Prompt suffixes"
+                    style="width: 350px; font-family: var(--font-mono); font-size: 12px;">${escapeHtml((config.llm?.promptSuffixes || []).join('\n'))}</textarea>
             </div>
         </div>
 
@@ -495,7 +497,7 @@ function updateProviderFields() {
     const restFields = document.getElementById('provider-generic-rest');
 
     if (apiFields) apiFields.style.display = provider === 'anthropic-api' ? 'block' : 'none';
-    if (cliFields) cliFields.style.display = ['claude-cli', 'claude-persistent', 'copilot-cli'].includes(provider) ? 'block' : 'none';
+    if (cliFields) cliFields.style.display = ['claude-cli', 'claude-persistent', 'copilot-cli', 'copilot-persistent'].includes(provider) ? 'block' : 'none';
     if (restFields) restFields.style.display = provider === 'generic-rest' ? 'block' : 'none';
 }
 
@@ -546,6 +548,9 @@ async function saveConfig() {
         const key = parts[parts.length - 1];
         if (input.dataset.type === 'bool') {
             obj[key] = input.value === 'true';
+        } else if (input.dataset.type === 'string-array') {
+            // Split textarea lines into an array, filtering empty lines
+            obj[key] = (input.value || '').split('\n').map(s => s.trim()).filter(s => s.length > 0);
         } else if (input.type === 'number') {
             obj[key] = parseInt(input.value, 10);
         } else if (key === 'headers' && input.tagName === 'TEXTAREA') {
@@ -573,11 +578,16 @@ async function saveConfig() {
     }
 
     try {
-        await fetch('/api/config', {
+        var response = await fetch('/api/config', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(updated)
         });
+
+        if (!response.ok) {
+            var errData = await response.json().catch(function() { return {}; });
+            throw new Error(errData.error || ('Server returned ' + response.status));
+        }
 
         currentConfig = updated;
         isDirty = false;

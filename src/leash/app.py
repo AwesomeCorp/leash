@@ -17,6 +17,7 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+from leash import __version__
 from leash.config import ConfigurationManager
 from leash.middleware.security_headers import SecurityHeadersMiddleware
 
@@ -125,7 +126,7 @@ async def lifespan(app: FastAPI):
         profile_service=profile_svc,
     )
     trigger_svc = TriggerService(config_manager=config_mgr)
-    console_status_svc = ConsoleStatusService(enforcement_service=enforcement_svc)
+    console_status_svc = ConsoleStatusService(enforcement_service=enforcement_svc, hooks_installed=False)
     terminal_output_svc = TerminalOutputService()
     llm_client_provider = LLMClientProvider(config_manager=config_mgr, terminal_output=terminal_output_svc)
 
@@ -142,25 +143,45 @@ async def lifespan(app: FastAPI):
     pending_decision_svc = PendingDecisionService()
     tray_svc = NullTrayService()
     notification_svc = NullNotificationService()
-    if config.tray.enabled and sys.platform == "win32":
-        try:
-            from leash.services.tray.windows import (
-                WindowsNotificationService,
-                WindowsTrayService,
-            )
+    if config.tray.enabled:
+        if sys.platform == "win32":
+            try:
+                from leash.services.tray.windows import (
+                    WindowsNotificationService,
+                    WindowsTrayService,
+                )
 
-            tray_svc = WindowsTrayService(dashboard_url=service_url)
-            notification_svc = WindowsNotificationService(
-                tray_service=tray_svc,
-                use_large_popup=config.tray.use_large_popup,
-            )
-            logger.info("Windows tray service enabled")
-        except Exception:
-            logger.warning(
-                "Failed to initialize Windows tray services (tray.enabled=true), "
-                "falling back to null services. Install pystray and Pillow for tray support.",
-                exc_info=True,
-            )
+                tray_svc = WindowsTrayService(dashboard_url=service_url)
+                notification_svc = WindowsNotificationService(
+                    tray_service=tray_svc,
+                    use_large_popup=config.tray.use_large_popup,
+                )
+                logger.info("Windows tray service enabled")
+            except Exception:
+                logger.warning(
+                    "Failed to initialize Windows tray services (tray.enabled=true), "
+                    "falling back to null services. Install pystray and Pillow for tray support.",
+                    exc_info=True,
+                )
+        elif sys.platform == "darwin":
+            try:
+                from leash.services.tray.mac import MacNotificationService, MacTrayService
+
+                tray_svc = MacTrayService()
+                notification_svc = MacNotificationService()
+                logger.info("macOS notification service enabled")
+            except Exception:
+                logger.warning("Failed to initialize macOS tray services", exc_info=True)
+        else:
+            # Linux / other Unix
+            try:
+                from leash.services.tray.linux import LinuxNotificationService, LinuxTrayService
+
+                tray_svc = LinuxTrayService()
+                notification_svc = LinuxNotificationService()
+                logger.info("Linux notification service enabled")
+            except Exception:
+                logger.warning("Failed to initialize Linux tray services", exc_info=True)
 
     # Handler factory
     handler_factory = HookHandlerFactory(
@@ -218,11 +239,19 @@ async def lifespan(app: FastAPI):
         await enforcement_svc.set_mode("enforce")
 
     if not getattr(app.state, "cli_no_hooks", False):
-        try:
-            hook_installer.install()
-            logger.info("Claude hooks installed on startup")
-        except Exception:
-            logger.warning("Failed to install Claude hooks on startup", exc_info=True)
+        if config.hooks_user_uninstalled:
+            logger.warning(
+                "Hooks not installed: previously uninstalled by user. "
+                "Use the dashboard to re-install."
+            )
+            console_status_svc.log("WARNING: Hooks not installed (user previously uninstalled)")
+        else:
+            try:
+                hook_installer.install()
+                console_status_svc.set_hooks_installed(True)
+                logger.info("Claude hooks installed on startup")
+            except Exception:
+                logger.warning("Failed to install Claude hooks on startup", exc_info=True)
 
     # Install a force-exit handler: second Ctrl+C kills immediately.
     # On Windows, uvicorn's signal handling can fail to trigger lifespan
@@ -245,7 +274,55 @@ async def lifespan(app: FastAPI):
         signal.signal(signal.SIGINT, _force_exit_handler)
         signal.signal(signal.SIGTERM, _force_exit_handler)
 
+    # Route log messages from leash and uvicorn to the console log section
+    class _ConsoleLogHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            try:
+                msg = self.format(record)
+                console_status_svc.log(msg)
+            except Exception:
+                pass
+
+    _console_handler = _ConsoleLogHandler()
+    _console_handler.setLevel(logging.INFO)
+    _console_handler.setFormatter(logging.Formatter("%(levelname)s  %(message)s"))
+    logging.getLogger("leash").addHandler(_console_handler)
+
+    # Redirect uvicorn loggers through the console panel instead of stderr
+    for _uv_name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        _uv_logger = logging.getLogger(_uv_name)
+        # Remove default stream handlers so they don't write to stderr
+        for _h in list(_uv_logger.handlers):
+            if isinstance(_h, logging.StreamHandler):
+                _uv_logger.removeHandler(_h)
+        _uv_logger.addHandler(_console_handler)
+
     logger.info("Leash started - port %d, enforcement: %s", bind_port, enforcement_svc.mode)
+
+    # Auto-launch browser unless --no-browser was passed
+    hooks_installed = hook_installer.is_installed() if not getattr(app.state, "cli_no_hooks", False) else False
+    if not getattr(app.state, "cli_no_browser", False):
+        try:
+            import webbrowser
+
+            webbrowser.open(service_url)
+        except Exception:
+            logger.debug("Failed to open browser", exc_info=True)
+    else:
+        # Show tray notification when browser is not opened
+        hook_status_msg = "Hooks: installed" if hooks_installed else "Hooks: NOT installed"
+        try:
+            from leash.models.tray_models import NotificationInfo
+
+            await notification_svc.show_alert(
+                NotificationInfo(
+                    title="Leash is running",
+                    body=f"Dashboard: {service_url}\n{hook_status_msg}",
+                )
+            )
+        except Exception:
+            logger.debug("Failed to show startup notification", exc_info=True)
+
     yield
 
     _shutting_down = True
@@ -284,6 +361,12 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.debug("Error stopping transcript watcher", exc_info=True)
 
+        # Dispose console status service
+        logging.getLogger("leash").removeHandler(_console_handler)
+        for _uv_name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+            logging.getLogger(_uv_name).removeHandler(_console_handler)
+        console_status_svc.dispose()
+
     try:
         await asyncio.wait_for(_graceful_cleanup(), timeout=5.0)
         logger.info("Graceful shutdown complete")
@@ -297,7 +380,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
     app = FastAPI(
         title="Leash",
         description="Observe and enforce Claude Code permission requests",
-        version="0.1.0",
+        version=__version__,
         lifespan=lifespan,
     )
 

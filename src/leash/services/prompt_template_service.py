@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from pathlib import Path
 
 import aiofiles
@@ -54,13 +55,10 @@ class PromptTemplateService:
             return
 
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                self._watch_task = asyncio.create_task(self._watch_loop())
-            else:
-                logger.debug("Event loop not running, skipping file watcher start")
+            asyncio.get_running_loop()
+            self._watch_task = asyncio.create_task(self._watch_loop())
         except RuntimeError:
-            logger.debug("No event loop available, skipping file watcher start")
+            logger.debug("No running event loop, skipping file watcher start")
 
     def stop_watching(self) -> None:
         """Stop the background file watcher task."""
@@ -142,12 +140,15 @@ class PromptTemplateService:
         if not template_name.lower().endswith(".txt"):
             template_name += ".txt"
 
-        # Path traversal protection
+        # Path traversal protection: reject suspicious characters and verify
+        # the resolved path stays within the prompts directory.
         if ".." in template_name or "/" in template_name or "\\" in template_name:
             return False
 
         try:
-            file_path = self._prompts_dir / template_name
+            file_path = (self._prompts_dir / template_name).resolve()
+            if not str(file_path).startswith(str(self._prompts_dir.resolve()) + os.sep):
+                return False
             async with aiofiles.open(file_path, "w") as f:
                 await f.write(content)
             self._cache[template_name] = content

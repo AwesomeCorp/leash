@@ -28,10 +28,10 @@ class LlmConfig(BaseModel):
 
     provider: str = "claude-persistent"
     model: str = "opus"
-    timeout: int = 15000
+    timeout: int = 30000
     command: str | None = None
-    prompt_prefix: str | None = None
-    prompt_suffix: str | None = None
+    prompt_prefixes: list[str] = []
+    prompt_suffixes: list[str] = []
     system_prompt: str | None = (
         "You are a security analyzer that evaluates the safety of operations. "
         "Always respond ONLY with valid JSON containing safetyScore (0-100), "
@@ -147,3 +147,4 @@ class Configuration(BaseModel):
     copilot: CopilotConfig = CopilotConfig()
     triggers: TriggerConfig = TriggerConfig()
     tray: TrayConfig = TrayConfig()
+    hooks_user_uninstalled: bool = False

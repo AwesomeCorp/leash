@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
+import sys
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -55,6 +57,13 @@ async def run(
         FileNotFoundError: When the executable is not found.
         RuntimeError: When the process exits with a non-zero exit code.
     """
+    # On Windows, .cmd/.bat wrappers (npx.cmd, copilot.cmd) can't be exec'd directly
+    if sys.platform == "win32":
+        resolved = shutil.which(cmd)
+        if resolved and resolved.lower().endswith((".cmd", ".bat")):
+            args = ["/c", resolved, *args]
+            cmd = "cmd"
+
     logger.debug("[%s] Starting: %s %s (timeout: %dms)", source_name, cmd, " ".join(args), timeout_ms)
 
     proc = await asyncio.create_subprocess_exec(

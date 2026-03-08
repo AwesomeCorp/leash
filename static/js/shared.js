@@ -394,7 +394,7 @@ const TerminalPanel = {
         panel.innerHTML = `
             <div class="terminal-resize-handle" id="terminalResizeHandle"></div>
             <div class="terminal-header" id="terminalHeader">
-                <h3>&#9002; Terminal</h3>
+                <h3><span class="terminal-icon">&#9002;</span> LLM Process Output</h3>
                 <div class="terminal-header-actions">
                     <label><input type="checkbox" id="terminalAutoScroll" checked> Auto-scroll</label>
                     <button class="terminal-btn-sm" id="terminalClear">Clear</button>
@@ -512,6 +512,9 @@ const TerminalPanel = {
         if (btn) btn.classList.remove('active');
     },
 
+    _reconnectDelay: 1000,
+    _maxReconnectDelay: 30000,
+
     connect() {
         // Disconnect existing SSE first to avoid duplicates on reconnect
         this.disconnect();
@@ -544,6 +547,8 @@ const TerminalPanel = {
                     this._lastSeqId = seqId;
                     this.appendLine(line);
                 }
+                // Reset backoff on successful message
+                this._reconnectDelay = 1000;
             } catch (err) { console.warn('Terminal SSE parse error:', err); }
         };
         this.eventSource.onerror = () => {
@@ -551,7 +556,10 @@ const TerminalPanel = {
                 this.eventSource.close();
                 this.eventSource = null;
             }
-            setTimeout(() => this.connect(), 3000);
+            // Exponential backoff with cap
+            var delay = this._reconnectDelay;
+            this._reconnectDelay = Math.min(this._reconnectDelay * 2, this._maxReconnectDelay);
+            setTimeout(() => this.connect(), delay);
         };
     },
 
@@ -562,21 +570,53 @@ const TerminalPanel = {
         }
     },
 
+    _levelIcon(level) {
+        switch (level) {
+            case 'stderr': return '\u2716';  // ✖
+            case 'info':   return '\u2139';  // ℹ
+            default:       return '\u25B8';  // ▸
+        }
+    },
+
+    _formatText(text) {
+        // Highlight [PID nnn] tokens
+        let html = this.escapeHtml(text);
+        html = html.replace(/\[PID\s+(\d+)\]/g, '<span class="terminal-pid">PID $1</span>');
+        // Highlight score=NN
+        html = html.replace(/score=(\d+)/g, (m, score) => {
+            const n = parseInt(score);
+            const cls = n >= 80 ? 'terminal-score-safe' : n >= 50 ? 'terminal-score-cautious' : 'terminal-score-danger';
+            return `<span class="${cls}">score=${score}</span>`;
+        });
+        // Highlight category=xxx
+        html = html.replace(/category=(safe|cautious|risky|dangerous|unknown)/g, (m, cat) => {
+            const cls = 'terminal-cat-' + cat;
+            return `category=<span class="${cls}">${cat}</span>`;
+        });
+        // Highlight timing like "in NNNms" or "NNNms"
+        html = html.replace(/\b(\d+)ms\b/g, '<span class="terminal-timing">$1ms</span>');
+        return html;
+    },
+
     appendLine(line) {
         const empty = this.outputEl.querySelector('.terminal-empty');
         if (empty) empty.remove();
 
         const div = document.createElement('div');
-        div.className = `terminal-line terminal-level-${this.escapeAttr(line.level || 'stdout')}`;
+        const level = line.level || 'stdout';
+        div.className = `terminal-line terminal-level-${this.escapeAttr(level)}`;
 
         const ts = new Date(line.timestamp);
         const timeStr = ts.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
         const sourceClass = 'terminal-source-' + (line.source || '').replace(/[^a-z0-9-]/g, '');
+        const icon = this._levelIcon(level);
+
         div.innerHTML =
+            `<span class="terminal-level-icon terminal-level-icon-${this.escapeAttr(level)}">${icon}</span>` +
             `<span class="terminal-ts">${this.escapeHtml(timeStr)}</span>` +
             `<span class="terminal-source ${sourceClass}">${this.escapeHtml(line.source || '')}</span>` +
-            `<span class="terminal-text">${this.escapeHtml(line.text || '')}</span>`;
+            `<span class="terminal-text">${this._formatText(line.text || '')}</span>`;
 
         this.outputEl.appendChild(div);
 

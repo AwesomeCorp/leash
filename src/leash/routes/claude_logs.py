@@ -11,6 +11,8 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from leash.security import InputSanitizer
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -45,10 +47,10 @@ def _get_transcript_watcher(request: Request) -> Any:
 
 
 def _validate_session_id(session_id: str) -> str | None:
-    """Validate transcript session ID for path traversal. Returns error message or None."""
+    """Validate transcript session ID. Returns error message or None."""
     if not session_id or not session_id.strip():
         return "SessionId is required"
-    if ".." in session_id or "/" in session_id or "\\" in session_id:
+    if not InputSanitizer.is_valid_session_id(session_id):
         return "Invalid session ID"
     return None
 
