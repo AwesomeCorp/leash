@@ -80,8 +80,9 @@ class TerminalOutputService:
             if self._count < self.CAPACITY:
                 self._count += 1
 
-        # Fire events outside the lock to avoid deadlocks
-        for cb in self._subscribers:
+        # Fire events outside the lock to avoid deadlocks.
+        # Snapshot the list to avoid RuntimeError if a callback modifies it.
+        for cb in list(self._subscribers):
             try:
                 cb(line)
             except Exception:

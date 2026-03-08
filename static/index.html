@@ -32,6 +32,13 @@
         </nav>
 
         <main id="main">
+            <!-- Warning banner for user-uninstalled hooks -->
+            <div id="hooksWarningBanner" class="hooks-warning-banner" style="display:none">
+                <span class="hooks-warning-icon">&#9888;</span>
+                Hooks are not installed because you previously uninstalled them. Claude Code sessions are not being monitored.
+                <button id="hooksWarningInstall" class="hooks-warning-btn">Re-install Hooks</button>
+            </div>
+
             <!-- Profile Switcher (Creative) -->
             <section class="profile-switcher">
                 <h2>Security Profile</h2>
@@ -212,6 +219,9 @@
         </button>
         <button class="qa-btn qa-report" id="btnReport" title="Generate audit report">
             <span class="qa-icon">&#x1f4cb;</span> Audit Report
+        </button>
+        <button class="qa-btn qa-shutdown" id="btnShutdown" title="Shut down Leash server">
+            <span class="qa-icon">&#x23FB;</span> Shutdown
         </button>
     </div>
 

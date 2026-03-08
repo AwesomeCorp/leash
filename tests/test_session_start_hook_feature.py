@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -64,9 +65,15 @@ def test_hook_installer_writes_session_start_script(tmp_path: Path, monkeypatch)
     settings = json.loads(settings_path.read_text(encoding="utf-8"))
     session_start_entries = settings["hooks"]["SessionStart"]
     assert len(session_start_entries) == 1
-    assert "powershell -ExecutionPolicy Bypass" in session_start_entries[0]["hooks"][0]["command"]
 
-    script_path = fake_home / ".leash" / "hooks" / "claude-session-start.ps1"
+    command = session_start_entries[0]["hooks"][0]["command"]
+    if os.name == "nt":
+        assert "powershell -ExecutionPolicy Bypass" in command
+        script_path = fake_home / ".leash" / "hooks" / "claude-session-start.ps1"
+    else:
+        assert command.startswith("bash ")
+        script_path = fake_home / ".leash" / "hooks" / "claude-session-start.sh"
+
     script = script_path.read_text(encoding="utf-8")
     assert "--run-session-hook" in script
     assert "--hook-provider" in script

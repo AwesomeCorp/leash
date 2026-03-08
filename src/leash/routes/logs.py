@@ -175,13 +175,18 @@ async def export_csv(request: Request) -> StreamingResponse:
         output = io.StringIO()
         output.write("Timestamp,SessionId,Type,ToolName,Decision,SafetyScore,Category,Provider,Reasoning\n")
         for evt in events:
-            reasoning = _escape_csv_field(evt.get("reasoning") or "")
-            tool_name = _escape_csv_field(evt.get("toolName") or "")
-            output.write(
-                f"{evt.get('timestamp', '')},{evt.get('sessionId', '')},{evt.get('type', '')},"
-                f"{tool_name},{evt.get('decision', '')},{evt.get('safetyScore', '')},"
-                f"{evt.get('category', '')},{evt.get('provider', '')},{reasoning}\n"
-            )
+            row = [
+                _escape_csv_field(str(evt.get("timestamp") or "")),
+                _escape_csv_field(str(evt.get("sessionId") or "")),
+                _escape_csv_field(str(evt.get("type") or "")),
+                _escape_csv_field(str(evt.get("toolName") or "")),
+                _escape_csv_field(str(evt.get("decision") or "")),
+                _escape_csv_field(str(evt.get("safetyScore") or "")),
+                _escape_csv_field(str(evt.get("category") or "")),
+                _escape_csv_field(str(evt.get("provider") or "")),
+                _escape_csv_field(str(evt.get("reasoning") or "")),
+            ]
+            output.write(",".join(row) + "\n")
 
         filename = f"permission-logs-{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.csv"
         return StreamingResponse(

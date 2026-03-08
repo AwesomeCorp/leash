@@ -40,10 +40,12 @@ class SessionManager:
             ) from e
 
     def _get_lock(self, session_id: str) -> asyncio.Lock:
-        """Get or create a per-session lock."""
-        if session_id not in self._session_locks:
-            self._session_locks[session_id] = asyncio.Lock()
-        return self._session_locks[session_id]
+        """Get or create a per-session lock.
+
+        Uses setdefault for atomic insert-or-get to avoid TOCTOU races
+        when two coroutines request the same new session_id concurrently.
+        """
+        return self._session_locks.setdefault(session_id, asyncio.Lock())
 
     def _validate_session_id(self, session_id: str) -> None:
         """Validate session ID to prevent path traversal and injection."""
@@ -60,7 +62,9 @@ class SessionManager:
         resolved = file_path.resolve()
 
         # Defense in depth: verify resolved path is within storage directory
-        if not str(resolved).startswith(str(self._storage_dir)):
+        try:
+            resolved.relative_to(self._storage_dir)
+        except ValueError:
             raise ValueError(f"Path traversal detected in session ID: {session_id}")
 
         return resolved
@@ -131,7 +135,7 @@ class SessionManager:
             while len(session.conversation_history) > self._max_history_size:
                 session.conversation_history.pop(0)
 
-        await self._save_session(session)
+            await self._save_session_internal(session)
 
     async def build_context(self, session_id: str, max_events: int = 10) -> str:
         """Build a text summary of recent session events."""
@@ -199,14 +203,17 @@ class SessionManager:
             await self._save_session_internal(session)
 
     async def _save_session_internal(self, session: SessionData) -> None:
-        """Write session data to disk."""
+        """Write session data to disk atomically."""
         file_path = self._get_session_file_path(session.session_id)
 
         try:
             data = session.model_dump(by_alias=True, mode="json")
             raw = json.dumps(data, indent=2)
-            async with aiofiles.open(file_path, "w") as f:
+            # Atomic write: write to temp file then rename to avoid corruption
+            tmp_path = file_path.with_suffix(".tmp")
+            async with aiofiles.open(tmp_path, "w") as f:
                 await f.write(raw)
+            tmp_path.replace(file_path)
         except PermissionError as e:
             logger.error("Failed to save session %s to %s: Permission denied", session.session_id, file_path)
             raise StorageException(

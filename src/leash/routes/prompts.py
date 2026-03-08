@@ -41,6 +41,8 @@ async def get_template(request: Request, template_name: str) -> JSONResponse:
     """Return a single prompt template by name."""
     if not template_name or not template_name.strip():
         return JSONResponse(status_code=400, content={"error": "Template name is required"})
+    if ".." in template_name or "/" in template_name or "\\" in template_name:
+        return JSONResponse(status_code=400, content={"error": "Invalid template name"})
 
     svc = _get_prompt_service(request)
     if svc is None:
@@ -58,6 +60,8 @@ async def save_template(request: Request, template_name: str) -> JSONResponse:
     """Save or update a prompt template."""
     if not template_name or not template_name.strip():
         return JSONResponse(status_code=400, content={"error": "Template name is required"})
+    if ".." in template_name or "/" in template_name or "\\" in template_name:
+        return JSONResponse(status_code=400, content={"error": "Invalid template name"})
 
     try:
         body = await request.json()
@@ -72,7 +76,7 @@ async def save_template(request: Request, template_name: str) -> JSONResponse:
     if svc is None:
         return JSONResponse(status_code=503, content={"error": "Prompt template service not available"})
 
-    success = svc.save_template(template_name, content)
+    success = await svc.save_template(template_name, content)
     if not success:
         return JSONResponse(status_code=500, content={"error": "Failed to save template"})
 

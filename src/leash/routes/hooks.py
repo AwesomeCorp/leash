@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Query, Request
@@ -53,11 +54,20 @@ async def get_status(request: Request) -> JSONResponse:
         except Exception:
             pass
 
+    hooks_user_uninstalled = False
+    config_mgr = getattr(request.app.state, "config_manager", None)
+    if config_mgr is not None:
+        try:
+            hooks_user_uninstalled = config_mgr.get_configuration().hooks_user_uninstalled
+        except Exception:
+            pass
+
     return JSONResponse(
         content={
             "installed": installed,
             "enforced": enforced,
             "enforcementMode": enforcement_mode,
+            "hooksUserUninstalled": hooks_user_uninstalled,
             "copilot": {"userInstalled": copilot_user_installed},
         }
     )
@@ -111,6 +121,15 @@ async def install_hooks(request: Request) -> JSONResponse:
 
     try:
         hook_installer.install()
+
+        # Clear the user-uninstalled flag so hooks auto-install on next startup
+        config_mgr = getattr(request.app.state, "config_manager", None)
+        if config_mgr is not None:
+            config = config_mgr.get_configuration()
+            if config.hooks_user_uninstalled:
+                config.hooks_user_uninstalled = False
+                await config_mgr.update(config)
+
         return JSONResponse(content={"installed": True, "message": "Hooks installed successfully"})
     except Exception as exc:
         logger.error("Failed to install hooks: %s", exc)
@@ -126,6 +145,14 @@ async def uninstall_hooks(request: Request) -> JSONResponse:
 
     try:
         hook_installer.uninstall()
+
+        # Remember the user's decision so hooks stay uninstalled on next startup
+        config_mgr = getattr(request.app.state, "config_manager", None)
+        if config_mgr is not None:
+            config = config_mgr.get_configuration()
+            config.hooks_user_uninstalled = True
+            await config_mgr.update(config)
+
         return JSONResponse(content={"installed": False, "message": "Hooks uninstalled successfully"})
     except Exception as exc:
         logger.error("Failed to uninstall hooks: %s", exc)
@@ -150,7 +177,10 @@ async def install_copilot_hooks(
                     status_code=400,
                     content={"error": "repoPath query parameter is required for repo-level installation"},
                 )
-            copilot_installer.install_repo(repo_path)
+            resolved = Path(repo_path).expanduser().resolve()
+            if not resolved.is_dir():
+                return JSONResponse(status_code=400, content={"error": "repoPath must be an existing directory"})
+            copilot_installer.install_repo(str(resolved))
             return JSONResponse(
                 content={"installed": True, "level": "repo", "message": "Copilot hooks installed at repo level"}
             )
@@ -184,7 +214,10 @@ async def uninstall_copilot_hooks(
                     status_code=400,
                     content={"error": "repoPath query parameter is required for repo-level uninstall"},
                 )
-            copilot_installer.uninstall_repo(repo_path)
+            resolved = Path(repo_path).expanduser().resolve()
+            if not resolved.is_dir():
+                return JSONResponse(status_code=400, content={"error": "repoPath must be an existing directory"})
+            copilot_installer.uninstall_repo(str(resolved))
             return JSONResponse(
                 content={"installed": False, "level": "repo", "message": "Copilot hooks uninstalled from repo level"}
             )

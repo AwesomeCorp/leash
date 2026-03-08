@@ -106,14 +106,15 @@
                     return;
                 }
 
-                list.innerHTML = names.map(name => `
-                    <div class="template-item ${name === currentTemplate ? 'active' : ''}"
-                         onclick="selectTemplate('${name}')">
-                        ${name}
-                    </div>
-                `).join('');
+                list.innerHTML = names.map(name => {
+                    var escaped = escapeHtml(name);
+                    return `<div class="template-item ${name === currentTemplate ? 'active' : ''}"
+                         onclick="selectTemplate(decodeURIComponent('${encodeURIComponent(name)}'))">
+                        ${escaped}
+                    </div>`;
+                }).join('');
             } catch (err) {
-                document.getElementById('templateList').innerHTML = `<p class="empty-state">Error: ${err.message}</p>`;
+                document.getElementById('templateList').innerHTML = `<p class="empty-state">Error: ${escapeHtml(err.message)}</p>`;
             }
         }
 

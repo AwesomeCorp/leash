@@ -1,0 +1,504 @@
+"""Base class for persistent ACP (Agent Client Protocol) LLM clients.
+
+Manages a persistent subprocess that speaks ACP over stdin/stdout (JSON-RPC,
+newline-delimited).  Handles the initialize → session/new → session/prompt
+lifecycle, process management, stderr consumption, and failure tracking.
+
+Subclasses only need to implement ``_get_command_and_args`` and
+``_parse_assistant_text`` to provide agent-specific CLI arguments and response
+parsing.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import shutil
+import sys
+import threading
+import time
+from typing import TYPE_CHECKING
+
+from leash import __version__
+from leash.models.llm_response import LLMResponse
+from leash.services.llm_client_base import LLMClientBase
+
+if TYPE_CHECKING:
+    from leash.config import ConfigurationManager
+    from leash.models.configuration import LlmConfig
+    from leash.services.terminal_output_service import TerminalOutputService
+
+logger = logging.getLogger(__name__)
+
+_MAX_CONSECUTIVE_FAILURES = 3
+
+# Environment variables to strip from subprocess to prevent nesting detection
+_NESTING_ENV_VARS = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS")
+
+# Thread-safe JSON-RPC id counter (module-level, shared across instances)
+_rpc_id_lock = threading.Lock()
+_next_rpc_id = 0
+
+
+def _rpc_id() -> int:
+    global _next_rpc_id
+    with _rpc_id_lock:
+        _next_rpc_id += 1
+        return _next_rpc_id
+
+
+def _build_acp_subprocess_env() -> dict[str, str]:
+    """Build environment for an ACP subprocess."""
+    env = dict(os.environ)
+    for key in _NESTING_ENV_VARS:
+        env.pop(key, None)
+    return env
+
+
+def _resolve_command_for_platform(cmd: str, args: list[str]) -> tuple[str, list[str]]:
+    """Resolve a command for cross-platform subprocess execution.
+
+    On Windows, .cmd/.bat files (e.g. npx.cmd, copilot.cmd) cannot be
+    executed directly by CreateProcessW.  This function detects them and
+    wraps the invocation with ``cmd.exe /c``.
+    """
+    if sys.platform != "win32":
+        return cmd, args
+
+    resolved = shutil.which(cmd)
+    if resolved and resolved.lower().endswith((".cmd", ".bat")):
+        return "cmd", ["/c", resolved, *args]
+
+    return cmd, args
+
+
+class AcpClientBase(LLMClientBase):
+    """Base class for ACP-based persistent LLM clients.
+
+    Manages the persistent process, ACP handshake, session creation, and
+    prompt/response cycle.  Subclasses must implement:
+
+    - ``_get_command_and_args()`` → (cmd, args) for subprocess_exec
+    - ``_parse_assistant_text(text)`` → LLMResponse
+    - ``_create_fallback_client()`` → one-shot LLMClient for fallback
+    - ``_label`` property → short name for logging (e.g. "claude", "copilot")
+    """
+
+    def __init__(
+        self,
+        config: LlmConfig,
+        config_manager: ConfigurationManager | None = None,
+        terminal_output: TerminalOutputService | None = None,
+    ) -> None:
+        super().__init__(config_manager=config_manager, initial_config=config, terminal_output=terminal_output)
+        if config is None:
+            raise ValueError("config is required")
+        self._config = config
+        self._process: asyncio.subprocess.Process | None = None
+        self._lock = asyncio.Lock()
+        self._consecutive_failures = 0
+        self._disposed = False
+        self._fallback_client = self._create_fallback_client()
+        self._stderr_task: asyncio.Task[None] | None = None
+        self._kill_task: asyncio.Task[None] | None = None
+        self._session_id: str | None = None
+
+    # -- abstract interface (subclasses must implement) -----------------------
+
+    @property
+    def _label(self) -> str:
+        raise NotImplementedError
+
+    def _get_command_and_args(self) -> tuple[str, list[str]]:
+        """Return (executable, args) for the ACP subprocess."""
+        raise NotImplementedError
+
+    def _parse_assistant_text(self, text: str) -> LLMResponse:
+        """Parse assistant text into an LLMResponse."""
+        raise NotImplementedError
+
+    def _create_fallback_client(self):
+        """Create a one-shot fallback client."""
+        raise NotImplementedError
+
+    # -- public API ----------------------------------------------------------
+
+    async def query(self, prompt: str) -> LLMResponse:
+        """Send a prompt via ACP, falling back to one-shot on failure."""
+        if self._disposed:
+            raise RuntimeError(f"Persistent{self._label.title()}Client has been disposed")
+
+        async with self._lock:
+            result = await self._try_acp_query(prompt)
+            if result is not None:
+                self._consecutive_failures = 0
+                return result
+
+        self._push_terminal(f"persistent-{self._label}", "stderr", f"ACP query failed — falling back to one-shot {self._label}")
+        logger.warning("Persistent %s ACP query failed, falling back to one-shot", self._label)
+        return await self._fallback_client.query(prompt)
+
+    # -- ACP protocol --------------------------------------------------------
+
+    async def _send_rpc(self, proc: asyncio.subprocess.Process, method: str, params: dict | None = None, rpc_id: int | None = None) -> None:
+        """Send a JSON-RPC request or notification."""
+        msg: dict = {"jsonrpc": "2.0", "method": method}
+        if params is not None:
+            msg["params"] = params
+        if rpc_id is not None:
+            msg["id"] = rpc_id
+        line = json.dumps(msg) + "\n"
+        proc.stdin.write(line.encode("utf-8"))
+        await proc.stdin.drain()
+
+    async def _read_rpc_response(self, proc: asyncio.subprocess.Process, expected_id: int, deadline: float) -> dict | None:
+        """Read JSON-RPC messages until we get a response matching expected_id.
+
+        Notifications (no "id") are processed and discarded.
+        Returns the result dict or None on timeout/EOF.
+        """
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            try:
+                line_bytes = await asyncio.wait_for(proc.stdout.readline(), timeout=remaining)
+            except asyncio.TimeoutError:
+                return None
+            if not line_bytes:
+                return None
+
+            line = line_bytes.decode("utf-8", errors="replace").strip()
+            if not line:
+                continue
+
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            # Is this a response to our request?
+            if "id" in data and data["id"] == expected_id:
+                if "error" in data:
+                    logger.error("[%s] RPC error: %s", self._label, data["error"])
+                    return None
+                return data.get("result", {})
+
+            # Otherwise it's a notification — log and continue
+            method = data.get("method", "")
+            if method == "session/update":
+                self._handle_session_update(data.get("params", {}))
+
+    def _handle_session_update(self, params: dict) -> None:
+        """Process a session/update notification, extracting agent text chunks."""
+        update = params.get("update", {})
+        update_type = update.get("sessionUpdate", "")
+        if update_type == "agent_message_chunk":
+            content = update.get("content", {})
+            if content.get("type") == "text":
+                text = content.get("text", "")
+                if text:
+                    self._push_terminal(f"persistent-{self._label}", "stdout", text[:200])
+
+    async def _acp_initialize(self, proc: asyncio.subprocess.Process, deadline: float) -> bool:
+        """Send ACP initialize handshake."""
+        rid = _rpc_id()
+        await self._send_rpc(proc, "initialize", {
+            "protocolVersion": 1,
+            "clientCapabilities": {},
+            "clientInfo": {"name": "leash", "title": "Leash", "version": __version__},
+        }, rpc_id=rid)
+        result = await self._read_rpc_response(proc, rid, deadline)
+        if result is None:
+            logger.error("[%s] ACP initialize failed", self._label)
+            return False
+        logger.info("[%s] ACP initialized (protocol v%s)", self._label, result.get("protocolVersion", "?"))
+        return True
+
+    async def _acp_new_session(self, proc: asyncio.subprocess.Process, deadline: float) -> str | None:
+        """Create a new ACP session. Returns sessionId or None."""
+        rid = _rpc_id()
+        await self._send_rpc(proc, "session/new", {
+            "cwd": os.getcwd(),
+            "mcpServers": [],
+        }, rpc_id=rid)
+        result = await self._read_rpc_response(proc, rid, deadline)
+        if result is None:
+            logger.error("[%s] ACP session/new failed", self._label)
+            return None
+        session_id = result.get("sessionId")
+        logger.info("[%s] ACP session created: %s", self._label, session_id)
+        return session_id
+
+    async def _acp_prompt(self, proc: asyncio.subprocess.Process, session_id: str, text: str, deadline: float) -> tuple[str | None, bool]:
+        """Send a session/prompt and collect the response.
+
+        Returns (collected_assistant_text, success).
+        """
+        rid = _rpc_id()
+        await self._send_rpc(proc, "session/prompt", {
+            "sessionId": session_id,
+            "prompt": [{"type": "text", "text": text}],
+        }, rpc_id=rid)
+
+        # Read until we get the response for this prompt
+        collected_text: list[str] = []
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return "".join(collected_text) if collected_text else None, False
+            try:
+                line_bytes = await asyncio.wait_for(proc.stdout.readline(), timeout=remaining)
+            except asyncio.TimeoutError:
+                return "".join(collected_text) if collected_text else None, False
+            if not line_bytes:
+                logger.error("[%s] stdout closed during prompt", self._label)
+                await self._kill_process()
+                return None, False
+
+            line = line_bytes.decode("utf-8", errors="replace").strip()
+            if not line:
+                continue
+
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            # Response to our prompt request = turn complete
+            if "id" in data and data["id"] == rid:
+                if "error" in data:
+                    logger.error("[%s] prompt error: %s", self._label, data["error"])
+                    return None, False
+                return "".join(collected_text) if collected_text else None, True
+
+            # Notification — collect text chunks
+            method = data.get("method", "")
+            if method == "session/update":
+                params = data.get("params", {})
+                update = params.get("update", {})
+                update_type = update.get("sessionUpdate", "")
+                if update_type == "agent_message_chunk":
+                    content = update.get("content", {})
+                    if content.get("type") == "text":
+                        collected_text.append(content.get("text", ""))
+
+    # -- query implementation ------------------------------------------------
+
+    def _get_prompt_sequences(self) -> tuple[list[str], list[str]]:
+        """Read prompt prefix/suffix sequences from live config."""
+        prefixes: list[str] = []
+        suffixes: list[str] = []
+        if self._config_manager is not None:
+            try:
+                llm_cfg = self._config_manager.get_configuration().llm
+                prefixes = llm_cfg.prompt_prefixes
+                suffixes = llm_cfg.prompt_suffixes
+            except Exception:
+                pass
+        return prefixes, suffixes
+
+    async def _try_acp_query(self, prompt: str) -> LLMResponse | None:
+        """Attempt a query via ACP. Returns None on failure."""
+        try:
+            if not await self._ensure_process_running():
+                return None
+
+            proc = self._process
+            if proc is None or proc.stdin is None or proc.stdout is None:
+                return None
+
+            timeout = self.current_timeout
+            pid = proc.pid
+            self._push_terminal(f"persistent-{self._label}", "info", f"[PID {pid}] Sending prompt ({len(prompt)} chars, timeout: {timeout}ms)")
+            self._push_terminal(f"persistent-{self._label}", "stdout", f"[PID {pid}] Prompt: {self.preview_prompt(prompt)}")
+            logger.info(
+                "[%s] Sending prompt (%d chars, timeout: %dms): %s",
+                self._label, len(prompt), timeout, self.preview_prompt(prompt),
+            )
+
+            start = time.monotonic()
+            deadline = start + (timeout / 1000.0)
+
+            # Create a fresh session for each query to avoid context accumulation
+            session_id = await self._acp_new_session(proc, deadline)
+            if session_id is None:
+                self._increment_failures_and_maybe_kill()
+                return None
+            self._session_id = session_id
+
+            # Send prefix messages
+            prefixes, suffixes = self._get_prompt_sequences()
+            for prefix in prefixes:
+                if not prefix:
+                    continue
+                logger.debug("[%s] Sending prefix: %s", self._label, prefix)
+                _, ok = await self._acp_prompt(proc, session_id, prefix, deadline)
+                if not ok:
+                    logger.warning("[%s] Prefix did not complete: %s", self._label, prefix)
+                    self._increment_failures_and_maybe_kill()
+                    return None
+
+            # Send actual prompt
+            assistant_text, got_result = await self._acp_prompt(proc, session_id, prompt, deadline)
+
+            if not got_result:
+                elapsed_ms = int((time.monotonic() - start) * 1000)
+                self._push_terminal(f"persistent-{self._label}", "stderr", f"[PID {pid}] Timeout — no result after {elapsed_ms}ms")
+                logger.warning("[%s] No result after %dms", self._label, elapsed_ms)
+                self._increment_failures_and_maybe_kill()
+                return None
+
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            logger.info("[%s] Result received in %dms", self._label, elapsed_ms)
+
+            # Send suffix messages
+            for suffix in suffixes:
+                if not suffix:
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                logger.debug("[%s] Sending suffix: %s", self._label, suffix)
+                await self._acp_prompt(proc, session_id, suffix, deadline)
+
+            parsed = self._parse_assistant_text(assistant_text or "")
+            parsed.elapsed_ms = elapsed_ms
+            self._push_terminal(f"persistent-{self._label}", "info", f"[PID {pid}] Result in {elapsed_ms}ms — score={parsed.safety_score}, category={parsed.category}")
+            return parsed
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            pid_str = f"PID {proc.pid}" if proc is not None else "no process"
+            self._push_terminal(f"persistent-{self._label}", "stderr", f"[{pid_str}] Query failed: {exc}")
+            logger.error("[%s] Query failed: %s", self._label, exc)
+            self._increment_failures_and_maybe_kill()
+            return None
+
+    # -- process management --------------------------------------------------
+
+    async def _ensure_process_running(self) -> bool:
+        """Start the ACP process and complete handshake if not running."""
+        if self._process is not None and self._process.returncode is None and self._session_id is not None:
+            return True
+
+        await self._kill_process()
+
+        try:
+            cmd, args = self._get_command_and_args()
+            cmd, args = _resolve_command_for_platform(cmd, args)
+            env = _build_acp_subprocess_env()
+
+            self._process = await asyncio.create_subprocess_exec(
+                cmd, *args,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+
+            pid = self._process.pid
+            logger.info("[%s] Process started (PID: %s)", self._label, pid)
+            self._push_terminal(f"persistent-{self._label}", "info", f"Process started (PID: {pid}, cmd: {cmd} {' '.join(args)})")
+
+            # Consume stderr in background
+            proc = self._process
+            self._stderr_task = asyncio.create_task(self._consume_stderr(proc))
+
+            # Brief check that the process didn't die immediately
+            await asyncio.sleep(0.3)
+            if self._process.returncode is not None:
+                self._push_terminal(f"persistent-{self._label}", "stderr", f"[PID {pid}] Process exited immediately (code {self._process.returncode})")
+                logger.error("[%s] Process exited immediately with code %s", self._label, self._process.returncode)
+                await self._kill_process()
+                return False
+
+            # ACP handshake
+            deadline = time.monotonic() + 15.0
+            if not await self._acp_initialize(self._process, deadline):
+                self._push_terminal(f"persistent-{self._label}", "stderr", f"[PID {pid}] ACP handshake failed")
+                await self._kill_process()
+                return False
+
+            self._push_terminal(f"persistent-{self._label}", "info", f"[PID {pid}] ACP handshake complete")
+
+            session_id = await self._acp_new_session(self._process, deadline)
+            if session_id is None:
+                await self._kill_process()
+                return False
+
+            self._session_id = session_id
+            return True
+
+        except FileNotFoundError:
+            cmd, _ = self._get_command_and_args()
+            self._push_terminal(f"persistent-{self._label}", "stderr", f"CLI '{cmd}' not found in PATH")
+            logger.error("[%s] CLI '%s' not found in PATH", self._label, cmd)
+            await self._kill_process()
+            return False
+        except Exception as exc:
+            self._push_terminal(f"persistent-{self._label}", "stderr", f"Failed to start: {exc}")
+            logger.error("[%s] Failed to start process: %s", self._label, exc)
+            await self._kill_process()
+            return False
+
+    async def _consume_stderr(self, proc: asyncio.subprocess.Process) -> None:
+        """Read stderr, forwarding to terminal output and debug log."""
+        if proc.stderr is None:
+            return
+        try:
+            while True:
+                line_bytes = await proc.stderr.readline()
+                if not line_bytes:
+                    break
+                line = line_bytes.decode("utf-8", errors="replace").strip()
+                if line:
+                    self._push_terminal(f"persistent-{self._label}", "stderr", line)
+                    logger.debug("[persistent-%s stderr] %s", self._label, line)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.debug("[%s] Stderr consumer ended unexpectedly", self._label, exc_info=True)
+
+    def _increment_failures_and_maybe_kill(self) -> None:
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
+            self._kill_task = asyncio.create_task(self._kill_process())
+
+    async def _kill_process(self) -> None:
+        proc = self._process
+        self._process = None
+        self._session_id = None
+
+        if proc is not None:
+            try:
+                if proc.returncode is None:
+                    self._push_terminal(f"persistent-{self._label}", "info", f"[PID {proc.pid}] Terminating process")
+                    logger.info("[%s] Terminating process (PID: %s)", self._label, proc.pid)
+                    proc.terminate()
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=2.0)
+                    except asyncio.TimeoutError:
+                        logger.warning("[%s] Process did not exit, killing (PID: %s)", self._label, proc.pid)
+                        proc.kill()
+                        try:
+                            await asyncio.wait_for(proc.wait(), timeout=2.0)
+                        except asyncio.TimeoutError:
+                            pass
+            except ProcessLookupError:
+                pass
+            except Exception as exc:
+                logger.debug("[%s] Exception killing process: %s", self._label, exc)
+
+        if self._stderr_task is not None:
+            self._stderr_task.cancel()
+            self._stderr_task = None
+
+    async def dispose(self) -> None:
+        if self._disposed:
+            return
+        self._disposed = True
+        await self._kill_process()

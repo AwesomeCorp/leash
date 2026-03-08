@@ -59,15 +59,11 @@ class TriggerService:
 
             for rule in matching_rules:
                 try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        asyncio.create_task(self._send_webhook(rule, payload_json))
-                    else:
-                        # Fallback for non-async contexts
-                        loop.run_until_complete(self._send_webhook(rule, payload_json))
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(self._send_webhook(rule, payload_json))
                 except RuntimeError:
-                    # No event loop available; log and skip
-                    logger.warning("No event loop available for trigger '%s'", rule.name)
+                    # No running event loop; log and skip
+                    logger.warning("No running event loop for trigger '%s'", rule.name)
 
         except Exception as e:
             logger.warning("Failed to evaluate trigger rules: %s", e)

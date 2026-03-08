@@ -17,6 +17,22 @@ logger = logging.getLogger(__name__)
 MAX_TIMEOUT_MS = 300_000  # 5 minutes
 MAX_OUTPUT_SIZE = 1_048_576  # 1MB
 
+# Shared model name mapping: shorthand → full Claude model ID.
+# Used by CLI clients and the Anthropic API client alike.
+MODEL_MAPPING: dict[str, str] = {
+    "sonnet": "claude-sonnet-4-5-20250929",
+    "opus": "claude-opus-4-6-20250918",
+    "haiku": "claude-haiku-4-5-20251001",
+}
+
+
+def resolve_model_name(model: str) -> str:
+    """Map a shorthand model name to its full Claude model ID.
+
+    Returns the input unchanged if no mapping exists.
+    """
+    return MODEL_MAPPING.get(model.lower(), model)
+
 
 class LLMClientBase:
     """Shared infrastructure for all LLM client implementations.

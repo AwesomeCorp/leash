@@ -35,6 +35,9 @@ class MacTrayService:
     def update_status(self, status: str) -> None:
         pass
 
+    def stop(self) -> None:
+        pass
+
 
 class MacNotificationService:
     """macOS notification service using osascript (AppleScript).

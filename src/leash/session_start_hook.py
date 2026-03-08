@@ -62,7 +62,7 @@ def persist_launch_metadata(host: str, port: int, config_path: str | None = None
         "launcher": resolve_launcher_command(),
         "host": host,
         "port": port,
-        "configPath": str(Path(config_path).resolve()) if config_path else None,
+        "configPath": str(Path(config_path).expanduser().resolve()) if config_path else None,
         "serviceUrl": build_service_url(host, port),
         "updatedAt": datetime.now(timezone.utc).isoformat(),
     }

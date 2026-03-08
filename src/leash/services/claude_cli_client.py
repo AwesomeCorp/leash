@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 from leash.models.llm_response import LLMResponse
 from leash.services.cli_process_runner import run as run_cli
-from leash.services.llm_client_base import MAX_OUTPUT_SIZE, LLMClientBase
+from leash.services.llm_client_base import MAX_OUTPUT_SIZE, LLMClientBase, resolve_model_name
 
 if TYPE_CHECKING:
     from leash.config import ConfigurationManager
@@ -128,10 +128,13 @@ class ClaudeCliClient(LLMClientBase):
         args = [
             "-p",
             "--model",
-            self._config.model,
+            resolve_model_name(self._config.model),
             "--output-format",
             "text",
             "--no-session-persistence",
+            "--dangerously-skip-permissions",
+            "--settings",
+            '{"disableAllHooks":true,"enableAllProjectMcpServers":false,"enableMcpServerCreation":false,"customSlashCommands":{}}',
         ]
         if self._config.system_prompt:
             args.extend(["--system-prompt", self._config.system_prompt])
@@ -156,20 +159,56 @@ def parse_response(output: str) -> LLMResponse:
 
 
 def _extract_json_from_output(output: str) -> str | None:
-    """Extract a JSON object string from mixed text output."""
-    start_idx = output.find("{")
-    if start_idx < 0:
+    """Extract the safety-analysis JSON object from mixed text output.
+
+    Scans all top-level ``{...}`` blocks and returns the first one that
+    contains a ``safetyScore`` key.  Falls back to the first parseable JSON
+    object if none contain the key, preserving backward compatibility.
+    """
+    candidates: list[str] = []
+    idx = 0
+    while idx < len(output):
+        start = output.find("{", idx)
+        if start < 0:
+            break
+
+        # Try parsing from this { to end of string
+        candidate = None
+        try:
+            json.loads(output[start:])
+            candidate = output[start:]
+        except json.JSONDecodeError:
+            # Fall back to brace counting from this position
+            candidate = _extract_json_by_brace_counting(output, start)
+
+        if candidate is not None:
+            candidates.append(candidate)
+            # Skip past this candidate to look for more
+            idx = start + len(candidate)
+        else:
+            idx = start + 1
+
+    if not candidates:
         return None
 
-    # Try parsing from start_idx to end of string first
-    try:
-        json.loads(output[start_idx:])
-        return output[start_idx:]
-    except json.JSONDecodeError:
-        pass
+    # Prefer the candidate that contains "safetyScore"
+    for c in candidates:
+        if "safetyScore" in c:
+            try:
+                json.loads(c)
+                return c
+            except json.JSONDecodeError:
+                pass
 
-    # Fall back to brace counting
-    return _extract_json_by_brace_counting(output, start_idx)
+    # Fall back to first parseable candidate
+    for c in candidates:
+        try:
+            json.loads(c)
+            return c
+        except json.JSONDecodeError:
+            pass
+
+    return None
 
 
 def _extract_json_by_brace_counting(output: str, start_idx: int) -> str | None:
@@ -236,23 +275,6 @@ def _is_valid_model_name(model: str) -> bool:
     return _MODEL_NAME_RE.match(model) is not None
 
 
-def get_isolated_config_dir() -> str:
-    """Get an isolated Claude config directory for the analyzer subprocess.
-
-    Creates a settings.json that disables all hooks, plugins, and MCP servers
-    so the subprocess starts quickly and doesn't recurse.
-    """
-    dir_path = Path.home() / ".leash" / "claude-subprocess"
-    dir_path.mkdir(parents=True, exist_ok=True)
-
-    settings_path = dir_path / "settings.json"
-    settings_path.write_text(
-        '{"disableAllHooks":true,"enableAllProjectMcpServers":false,"enabledPlugins":{}}',
-        encoding="utf-8",
-    )
-
-    return str(dir_path)
-
 
 def read_anthropic_api_key() -> str | None:
     """Read the Anthropic API key from the main Claude config (~/.claude/config.json).
@@ -272,21 +294,14 @@ def read_anthropic_api_key() -> str | None:
 def _build_subprocess_env() -> dict[str, str]:
     """Build environment variables for a Claude subprocess.
 
-    Removes nesting-detection variables, sets isolated config dir,
-    and provides the API key.
+    Removes nesting-detection variables so the subprocess doesn't
+    think it's running inside another Claude Code session.
+    Auth credentials are inherited from the user's normal config.
     """
     env = dict(os.environ)
 
     # Remove Claude Code nesting-detection env vars
     for key in _NESTING_ENV_VARS:
         env.pop(key, None)
-
-    # Point to isolated config dir
-    env["CLAUDE_CONFIG_DIR"] = get_isolated_config_dir()
-
-    # Provide API key from main config
-    api_key = read_anthropic_api_key()
-    if api_key:
-        env["ANTHROPIC_API_KEY"] = api_key
 
     return env

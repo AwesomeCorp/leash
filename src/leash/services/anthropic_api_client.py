@@ -12,7 +12,7 @@ import httpx
 
 from leash.models.llm_response import LLMResponse
 from leash.services.claude_cli_client import parse_response, read_anthropic_api_key
-from leash.services.llm_client_base import LLMClientBase
+from leash.services.llm_client_base import LLMClientBase, resolve_model_name
 
 if TYPE_CHECKING:
     from leash.config import ConfigurationManager
@@ -23,12 +23,6 @@ logger = logging.getLogger(__name__)
 _MAX_RETRIES = 3
 _DEFAULT_BASE_URL = "https://api.anthropic.com"
 _API_VERSION = "2023-06-01"
-
-_MODEL_MAPPING: dict[str, str] = {
-    "sonnet": "claude-sonnet-4-5-20250929",
-    "opus": "claude-opus-4-6-20250918",
-    "haiku": "claude-haiku-4-5-20251001",
-}
 
 
 class AnthropicApiClient(LLMClientBase):
@@ -72,7 +66,7 @@ class AnthropicApiClient(LLMClientBase):
     @staticmethod
     def _map_model(model: str) -> str:
         """Map short model names to full Anthropic model identifiers."""
-        return _MODEL_MAPPING.get(model.lower(), model)
+        return resolve_model_name(model)
 
     async def query(self, prompt: str) -> LLMResponse:
         """Send a prompt to the Anthropic Messages API and return a structured response."""
