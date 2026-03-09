@@ -20,11 +20,13 @@ _JSON_FORMAT_BLOCK = (
 
 # Regex to strip the JSON response format block from template content.
 # Matches an optional "=== RESPONSE FORMAT ===" header, then
-# "Respond ONLY with valid JSON:" followed by everything to end of string.
+# "Respond ONLY with valid JSON:" followed by a JSON block containing
+# "safetyScore" through to end of string.  Tolerates CRLF line endings
+# from Windows-edited templates.
 _FORMAT_BLOCK_RE = re.compile(
-    r"(?:===\s*RESPONSE FORMAT\s*===\s*\n)?"
-    r"Respond ONLY with valid JSON:\s*\n"
-    r"\{[\s\S]*\}\s*$",
+    r"(?:===\s*RESPONSE FORMAT\s*===\s*\r?\n)?"
+    r"Respond ONLY with valid JSON:\s*\r?\n"
+    r"\{[^}]*\"safetyScore\"[\s\S]*\}\s*$",
 )
 
 

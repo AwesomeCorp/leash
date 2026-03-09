@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import signal
 import threading
 from datetime import datetime, timezone
@@ -31,14 +30,15 @@ async def get_health() -> JSONResponse:
 
 
 def _send_shutdown_signal() -> None:
-    """Send SIGINT to the current process from a non-event-loop thread.
+    """Send SIGINT from a non-event-loop thread.
 
-    This runs on a ``threading.Timer`` so the HTTP response is fully sent
-    before the signal fires.  Sending from a separate thread ensures the
-    ``KeyboardInterrupt`` raised by the signal handler interrupts the main
-    event loop from the outside, triggering proper uvicorn shutdown.
+    Uses ``signal.raise_signal`` which goes through the C runtime signal
+    mechanism, correctly invoking the registered Python signal handler on
+    all platforms (including Windows).  Running from a ``threading.Timer``
+    ensures the signal arrives from outside the asyncio event loop so the
+    ``KeyboardInterrupt`` properly interrupts uvicorn's main loop.
     """
-    os.kill(os.getpid(), signal.SIGINT)
+    signal.raise_signal(signal.SIGINT)
 
 
 @router.post("/api/shutdown")
