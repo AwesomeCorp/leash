@@ -61,19 +61,19 @@ Graduate your trust level as you gain confidence.
 
 ### 1. Observe
 
-Watch & log everything. Agent runs normally. You learn what it does.
+Watch & log everything. Agent runs normally. Never approves or denies. Tray shows informational-only alerts.
 
 *Start here.*
 
 ### 2. Approve-Only
 
-Auto-approve safe operations. Uncertain ones fall through to you.
+Auto-approve safe operations. Unsafe ones return no opinion (agent asks you normally). Interactive tray dialogs for uncertain requests. Timeout = no opinion (never auto-deny).
 
 *Recommended for daily use.*
 
 ### 3. Enforce
 
-Full control. Approve safe, deny dangerous, flag uncertain with tray alerts.
+Full control. Approve safe, deny unsafe by default. Interactive tray lets you override denials. Timeout = deny.
 
 *Full protection.*
 
@@ -199,8 +199,10 @@ Use whatever LLM access you already have.
 |----------|-------------|-------|
 | **Anthropic API** | Direct HTTP to Claude API | Fastest option, requires API key |
 | **Claude CLI** | One-shot `claude` subprocess | Uses existing Claude Code auth |
-| **Claude Persistent** | Long-lived `claude` process | Faster responses, parallel queries |
+| **Claude Persistent (ACP)** | Long-lived process via Agent Client Protocol | Session reuse, lower latency |
+| **Claude Stream** | Long-lived process via stream-json I/O | Alternative to ACP, no npx dependency |
 | **Copilot CLI** | GitHub Copilot subprocess | Zero extra cost if you have Copilot |
+| **Copilot Persistent (ACP)** | Long-lived Copilot via ACP | Session reuse for Copilot |
 | **Generic REST** | Any OpenAI-compatible API | Ollama, LM Studio, local models, etc. |
 
 All configurable from the dashboard — switch providers without restarting.

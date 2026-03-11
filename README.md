@@ -114,15 +114,21 @@ Leash also installs a SessionStart hook. It checks the configured local port, st
 
 ### Enforcement Modes
 
-| Mode | Behavior |
-|------|----------|
-| **Observe** (default) | Logs events, optionally runs LLM analysis, returns `{}` - Claude asks user as normal |
-| **Approve-Only** | Auto-approves safe requests, falls through to user on anything uncertain |
-| **Enforce** | Full control - approve safe requests, deny dangerous ones, tray notifications for uncertain |
+| Mode | Safe requests | Unsafe requests | Tray behavior | Timeout |
+|------|--------------|----------------|---------------|---------|
+| **Observe** (default) | No opinion (`{}`) | No opinion (`{}`) | Informational alerts (no buttons) | N/A |
+| **Approve-Only** | Auto-approve | No opinion (`{}`) | Interactive (Approve/Deny/Ignore) | No opinion |
+| **Enforce** | Auto-approve | **Deny** | Interactive (user can override) | Deny |
 
 Dashboard button cycles: Observe &rarr; Approve-Only &rarr; Enforce &rarr; Observe.
 
-In Observe mode, LLM analysis can be toggled on/off from the dashboard (off = pure log-only with zero latency).
+- **Observe**: Logs events, optionally runs LLM analysis, but never returns a decision. Tray shows informational-only alerts. LLM analysis can be toggled on/off from the dashboard (off = pure log-only with zero latency).
+- **Approve-only**: Auto-approves safe requests (score &ge; threshold). Unsafe requests return no opinion &mdash; Claude asks the user as normal. If tray is enabled, shows interactive Approve/Deny dialog for unsafe requests.
+- **Enforce**: Full control. Auto-approves safe, denies unsafe by default. If tray is enabled, shows interactive dialog so the user can override the deny. On timeout, the deny executes.
+
+### Auto-Start
+
+Leash can auto-start when Claude Code or Copilot begins a session. Toggle the play button (&9205;) in the dashboard header to install/uninstall the SessionStart hook independently of other hooks.
 
 ### LLM Providers
 
@@ -130,15 +136,25 @@ In Observe mode, LLM analysis can be toggled on/off from the dashboard (off = pu
 |----------|----------------------|-------------|
 | Anthropic API | `anthropic-api` | Direct HTTP to Anthropic (fastest) |
 | Claude CLI | `claude-cli` | One-shot `claude` subprocess |
-| Persistent Claude | `claude-persistent` | Persistent `claude` process with stream-json I/O |
+| Claude Persistent (ACP) | `claude-persistent` | Persistent process via Agent Client Protocol |
+| Claude Stream | `claude-stream` | Persistent process via `--output-format stream-json` |
 | Copilot CLI | `copilot-cli` | GitHub Copilot CLI subprocess |
+| Copilot Persistent (ACP) | `copilot-persistent` | Persistent process via ACP |
 | Generic REST | `generic-rest` | Any REST LLM API (OpenAI, local, etc.) |
+
+Persistent providers (`claude-persistent`, `claude-stream`, `copilot-persistent`) reuse sessions across queries, eliminating per-query session overhead. The provider is automatically recreated when the model config changes. If the model field is empty, the CLI uses its built-in default.
 
 ### System Tray & Notifications
 
-- **Windows**: System tray icon (pystray) + Windows toast notifications with interactive Approve/Deny buttons
-- **macOS**: Native notifications via osascript with interactive dialogs
-- **Linux**: notify-send for alerts, zenity for interactive dialogs
+Tray notifications work in all three enforcement modes:
+- **Observe**: Informational alerts only (no buttons)
+- **Approve-only**: Interactive Approve/Deny/Ignore for unsafe requests
+- **Enforce**: Interactive dialog showing system deny, user can override
+
+Platform support:
+- **Windows**: System tray icon (pystray) + toast/popup notifications with interactive Approve/Deny/Ignore buttons
+- **macOS**: Native notifications via osascript with Approve/Deny dialogs
+- **Linux**: notify-send for alerts, zenity for interactive Approve/Deny dialogs
 
 Install with `pip install "leash[tray]"` to enable.
 
@@ -168,13 +184,20 @@ Config auto-created at `~/.leash/config.json`. All settings persist across sessi
 
 ```json
 {
-  "llm": { "provider": "claude-persistent", "model": "opus", "timeout": 15000 },
+  "llm": { "provider": "claude-persistent", "model": "opus", "timeout": 30000 },
   "server": { "port": 5050, "host": "localhost" },
   "security": { "apiKey": null, "rateLimitPerMinute": 600 },
   "profiles": { "activeProfile": "moderate" },
   "enforcementMode": "observe",
   "analyzeInObserveMode": true,
-  "tray": { "enabled": true, "alertOnDenied": true, "alertOnUncertain": false, "interactiveEnabled": true }
+  "tray": {
+    "enabled": true,
+    "showInObserve": true,
+    "showInApproveOnly": true,
+    "interactiveTimeoutSeconds": 10,
+    "sound": false,
+    "useLargePopup": true
+  }
 }
 ```
 

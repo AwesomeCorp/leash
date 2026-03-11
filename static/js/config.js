@@ -386,8 +386,8 @@ function renderConfig(config) {
         <div class="config-section">
             <h3>System Tray &amp; Notifications</h3>
             <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 12px;">
-                Native OS notifications. Approved actions are always silent. Score &le; 0 shows an informational denial alert (no buttons).
-                Uncertain scores (0 &lt; score &lt; threshold) show interactive Approve/Deny toast. Enforce mode never shows tray.
+                Native OS notifications for safety decisions. In observe mode: informational alerts only.
+                In approve-only and enforce modes: interactive Approve/Deny dialogs for unsafe requests.
             </p>
             <div class="config-field">
                 <label class="config-label" for="cfg-tray-enabled">
@@ -496,7 +496,7 @@ function updateProviderFields() {
     const restFields = document.getElementById('provider-generic-rest');
 
     if (apiFields) apiFields.style.display = provider === 'anthropic-api' ? 'block' : 'none';
-    if (cliFields) cliFields.style.display = ['claude-cli', 'claude-persistent', 'copilot-cli', 'copilot-persistent'].includes(provider) ? 'block' : 'none';
+    if (cliFields) cliFields.style.display = ['claude-cli', 'claude-persistent', 'claude-stream', 'copilot-cli', 'copilot-persistent'].includes(provider) ? 'block' : 'none';
     if (restFields) restFields.style.display = provider === 'generic-rest' ? 'block' : 'none';
 }
 
