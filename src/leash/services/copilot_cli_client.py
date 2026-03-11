@@ -179,6 +179,7 @@ class CopilotCliClient(LLMClientBase):
             "-s",
             "--allow-all-tools",
             "--no-custom-instructions",
+            "--disable-builtin-mcps",
         ])
 
         # Build environment without nesting-detection vars

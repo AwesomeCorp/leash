@@ -192,14 +192,15 @@ class TestPluginIsolation:
         # Capture what gets written to stdin
         written_data: list[bytes] = []
         mock_proc = _make_mock_proc(stdout_lines=[
-            _acp_response(1, {"protocolVersion": 1}),
-            _acp_response(2, {"sessionId": "s-init"}),
+            _acp_response(1, {"protocolVersion": 1}),    # initialize
+            _acp_response(2, {"sessionId": "s-query"}),   # session/new
+            _acp_response(3, {"stopReason": "end_turn"}),  # prompt (system+actual)
             b"",
         ])
         mock_proc.stdin.write = MagicMock(side_effect=lambda data: written_data.append(data))
 
         with _patch_acp_asyncio(mock_proc):
-            await client._ensure_process_running()
+            await client._try_acp_query("test")
 
         # Find the session/new request
         session_new_found = False
@@ -268,13 +269,12 @@ class TestPersistentClaudeClient:
 
         inner_json = '{"safetyScore": 85, "reasoning": "ok", "category": "safe"}'
 
-        # ACP flow: initialize → session/new (startup) → session/new (query) → prompt
+        # ACP flow: initialize → session/new → prompt (system+actual combined)
         stdout_lines = [
             _acp_response(1, {"protocolVersion": 1}),    # initialize
-            _acp_response(2, {"sessionId": "s-init"}),    # session/new (startup)
-            _acp_response(3, {"sessionId": "s-query"}),   # session/new (fresh per query)
+            _acp_response(2, {"sessionId": "s-query"}),   # session/new
             _acp_text_update(inner_json),                  # agent text chunk
-            _acp_response(4, {"stopReason": "end_turn"}),  # prompt response
+            _acp_response(3, {"stopReason": "end_turn"}),  # prompt response
             b"",  # EOF
         ]
 
@@ -330,10 +330,9 @@ class TestPersistentCopilotClient:
 
         stdout_lines = [
             _acp_response(1, {"protocolVersion": 1}),
-            _acp_response(2, {"sessionId": "s-init"}),
-            _acp_response(3, {"sessionId": "s-query"}),
+            _acp_response(2, {"sessionId": "s-query"}),
             _acp_text_update(safe_text),
-            _acp_response(4, {"stopReason": "end_turn"}),
+            _acp_response(3, {"stopReason": "end_turn"}),
             b"",
         ]
 
@@ -356,10 +355,9 @@ class TestPersistentCopilotClient:
 
         stdout_lines = [
             _acp_response(1, {"protocolVersion": 1}),
-            _acp_response(2, {"sessionId": "s-init"}),
-            _acp_response(3, {"sessionId": "s-query"}),
+            _acp_response(2, {"sessionId": "s-query"}),
             _acp_text_update(danger_text),
-            _acp_response(4, {"stopReason": "end_turn"}),
+            _acp_response(3, {"stopReason": "end_turn"}),
             b"",
         ]
 
@@ -407,7 +405,7 @@ class TestPersistentCopilotClient:
         client = PersistentCopilotClient(config=llm_config)
         cmd, args = client._get_command_and_args()
         assert cmd == "copilot"
-        assert args == ["--acp", "--no-custom-instructions"]
+        assert args == ["--acp", "--no-custom-instructions", "--disable-builtin-mcps"]
 
     def test_get_command_and_args_gh(self, llm_config: LlmConfig):
         from leash.services.persistent_copilot_client import PersistentCopilotClient
@@ -416,7 +414,7 @@ class TestPersistentCopilotClient:
         client = PersistentCopilotClient(config=llm_config)
         cmd, args = client._get_command_and_args()
         assert cmd == "gh"
-        assert args == ["copilot", "--acp", "--no-custom-instructions"]
+        assert args == ["copilot", "--acp", "--no-custom-instructions", "--disable-builtin-mcps"]
 
 
 # ---------------------------------------------------------------------------
@@ -425,9 +423,9 @@ class TestPersistentCopilotClient:
 
 
 class TestPerSessionClients:
-    """Verify per-session client creation for persistent providers."""
+    """Verify all providers share a single client to avoid API quota contention."""
 
-    async def test_session_clients_created_for_persistent_provider(self):
+    async def test_persistent_provider_shares_single_client(self):
         config = create_default_configuration()
         config.llm.provider = "claude-persistent"
         config_mgr = ConfigurationManager(config=config)
@@ -435,11 +433,7 @@ class TestPerSessionClients:
 
         client_a = await provider.get_client_for_session("session-a")
         client_b = await provider.get_client_for_session("session-b")
-        assert client_a is not client_b
-
-        # Same session returns the same client
-        client_a2 = await provider.get_client_for_session("session-a")
-        assert client_a2 is client_a
+        assert client_a is client_b
 
         await provider.dispose()
 
@@ -451,12 +445,11 @@ class TestPerSessionClients:
 
         client_a = await provider.get_client_for_session("session-a")
         client_b = await provider.get_client_for_session("session-b")
-        # Non-persistent providers share the same client
         assert client_a is client_b
 
         await provider.dispose()
 
-    async def test_copilot_persistent_gets_per_session_clients(self):
+    async def test_copilot_persistent_shares_single_client(self):
         config = create_default_configuration()
         config.llm.provider = "copilot-persistent"
         config_mgr = ConfigurationManager(config=config)
@@ -464,7 +457,7 @@ class TestPerSessionClients:
 
         client_a = await provider.get_client_for_session("session-x")
         client_b = await provider.get_client_for_session("session-y")
-        assert client_a is not client_b
+        assert client_a is client_b
 
         await provider.dispose()
 

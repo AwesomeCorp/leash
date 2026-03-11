@@ -17,6 +17,8 @@
                     <span class="status-indicator" aria-hidden="true"></span>
                     <span class="status-label">Checking...</span>
                 </div>
+                <button id="btnAutoStart" class="btn-autostart" title="Toggle auto-start (SessionStart hook)" aria-label="Toggle auto-start">&#x23F5;</button>
+                <button id="btnShutdown" class="btn-shutdown" title="Shut down Leash server" aria-label="Shut down Leash server">&#x23FB;</button>
                 <button id="themeToggle" class="theme-toggle" aria-label="Toggle dark mode" title="Toggle dark mode (D)">&#9790;</button>
             </div>
         </header>
@@ -54,11 +56,7 @@
             <div class="card">
                 <div class="card-header">
                     <h2>Hook Handlers</h2>
-                    <div style="display: flex; gap: 8px; align-items: center;">
-                        <span id="hookHandlersDirtyIndicator" style="display: none; color: var(--color-warning); font-size: 12px;">Unsaved changes</span>
-                        <button class="btn btn-sm" onclick="loadConfig()" aria-label="Reload hook handlers">Reload</button>
-                        <button class="btn btn-sm btn-primary" id="saveHookHandlersBtn" onclick="saveHookHandlers()" disabled aria-label="Save hook handler changes">Save Handlers</button>
-                    </div>
+                    <button class="btn btn-sm" onclick="loadConfig()" aria-label="Reload hook handlers">Reload</button>
                 </div>
                 <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 16px;">
                     Configure how each hook event type is processed. Each event can have multiple handlers with different matchers, modes, and thresholds. Use the Client field to target Claude, Copilot, or both.

@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Logs Page Logic - Detailed View with Incremental Updates
+   Logs Page Logic - Detailed View
    ========================================================================== */
 
 var lastLogTimestamp = null;
@@ -201,7 +201,7 @@ async function refreshData() {
     await loadLogs();
 }
 
-async function loadLogs(forceFullRender) {
+async function loadLogs(fullRender) {
     const container = document.getElementById('logEntries');
     if (!container) return;
 
@@ -241,8 +241,8 @@ async function loadLogs(forceFullRender) {
             return;
         }
 
-        // On first load or forced render, do a full render
-        if (forceFullRender || lastLogTimestamp === null || lastLogCount === 0) {
+        // First load or forced full render: replace entire container
+        if (fullRender || lastLogTimestamp === null || lastLogCount === 0) {
             renderAllLogs(container, logs);
             lastLogTimestamp = logs[0].timestamp;
             lastLogCount = logs.length;
@@ -251,29 +251,27 @@ async function loadLogs(forceFullRender) {
             return;
         }
 
-        // Incremental: find new entries (logs are newest-first, so new ones are at the start)
+        // Incremental: find new entries (logs are newest-first)
         var newLogs = [];
         for (var i = 0; i < logs.length; i++) {
             if (logs[i].timestamp === lastLogTimestamp) break;
-            // Also stop if we've gone past a reasonable number of new entries
-            if (i >= 50) break;
+            if (i >= 50) break; // safety cap
             newLogs.push(logs[i]);
         }
 
         if (newLogs.length > 0) {
-            // Prepend new entries to the DOM
+            // Count existing entries for index offset
             var existingCount = container.querySelectorAll('.log-entry-detailed').length;
+            // Prepend new entries (oldest of the new batch first so newest ends up on top)
             for (var j = newLogs.length - 1; j >= 0; j--) {
-                var idx = existingCount + (newLogs.length - 1 - j);
                 var div = document.createElement('div');
-                div.innerHTML = buildLogEntryHtml(newLogs[j], idx);
+                div.innerHTML = buildLogEntryHtml(newLogs[j], 0);
                 var child = div.firstElementChild;
                 if (child) {
                     container.insertBefore(child, container.firstChild);
                 }
             }
-
-            // Re-index all detail panels so toggles still work
+            // Re-index onclick handlers and detail IDs so toggles work
             reindexLogEntries(container);
 
             lastLogTimestamp = logs[0].timestamp;
@@ -282,7 +280,6 @@ async function loadLogs(forceFullRender) {
             autoScrollLogs();
         }
     } catch (error) {
-        // Only show error on first load, not on incremental failures
         if (lastLogCount === 0) {
             container.innerHTML = `
                 <div class="error-state">
@@ -292,7 +289,7 @@ async function loadLogs(forceFullRender) {
                 </div>
             `;
         } else {
-            console.error('Incremental log refresh failed:', error);
+            console.error('Log refresh failed:', error);
         }
     }
 }
@@ -302,27 +299,8 @@ var _fillPollTimer = null;
 async function loadLogsUntilFilled() {
     // Cancel any previous fill-poll
     if (_fillPollTimer) { clearTimeout(_fillPollTimer); _fillPollTimer = null; }
-
+    // Filter change: force full render
     await loadLogs(true);
-
-    var limit = parseInt(document.getElementById('filterLimit')?.value || '100', 10);
-    if (lastLogCount > 0 && lastLogCount < limit) {
-        // Not enough entries yet — poll a few more times to pick up new events
-        var attempts = 0;
-        var maxAttempts = 5;
-        function pollMore() {
-            attempts++;
-            if (attempts > maxAttempts) return;
-            _fillPollTimer = setTimeout(async function() {
-                var prevCount = lastLogCount;
-                await loadLogs(true);
-                // Stop if we filled up, or no new entries appeared
-                if (lastLogCount >= limit || lastLogCount === prevCount) return;
-                pollMore();
-            }, 1500);
-        }
-        pollMore();
-    }
 }
 
 /* ---------- Rendering ---------- */
@@ -339,7 +317,7 @@ function buildLogEntryHtml(log, i) {
     const requestPreview = getRequestPreview(log.toolInput);
 
     return `
-        <div class="log-entry-detailed" role="row">
+        <div class="log-entry-detailed" role="row" data-timestamp="${log.timestamp}">
             <div class="log-header" onclick="toggleLogDetail(${i})">
                 <span class="log-time" title="${formatTimestamp(log.timestamp)}">${new Date(log.timestamp).toLocaleTimeString(undefined, {hour:'2-digit',minute:'2-digit',second:'2-digit'})}</span>
                 <span class="log-provider-badge ${log.provider === 'copilot' ? 'provider-copilot' : 'provider-claude'}" title="${log.provider === 'copilot' ? 'Copilot' : 'Claude'}">${log.provider === 'copilot' ? 'CP' : 'CL'}</span>
@@ -474,7 +452,7 @@ async function clearLogs() {
         Toast.show('Logs Cleared', data.message, 'success');
         lastLogTimestamp = null;
         lastLogCount = 0;
-        loadLogs(true);
+        loadLogs();
         loadSessionFilter();
     } catch (err) {
         Toast.show('Error', err.message, 'danger');
@@ -547,7 +525,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Await session filter population so its saved value is applied before first load
     await loadSessionFilter();
-    loadLogs(true);
+    loadLogs();
 
     // Dropdown filter changes
     document.getElementById('filterSession')?.addEventListener('change', function() { saveFilter('cpa-logs-filter-session', this.value); lastLogTimestamp = null; lastLogCount = 0; loadLogsUntilFilled(); });

@@ -17,6 +17,8 @@
                     <span class="status-indicator" aria-hidden="true"></span>
                     <span class="status-label">Checking...</span>
                 </div>
+                <button id="btnAutoStart" class="btn-autostart" title="Toggle auto-start (SessionStart hook)" aria-label="Toggle auto-start">&#x23F5;</button>
+                <button id="btnShutdown" class="btn-shutdown" title="Shut down Leash server" aria-label="Shut down Leash server">&#x23FB;</button>
                 <button id="themeToggle" class="theme-toggle" aria-label="Toggle dark mode" title="Toggle dark mode (D)">&#9790;</button>
             </div>
         </header>
@@ -121,13 +123,6 @@
                             <span class="hook-status-badge" id="copilotInstalledBadge">Checking...</span>
                         </div>
                         <p class="hook-control-desc">Install/remove hooks for GitHub Copilot CLI</p>
-                        <div class="copilot-level-selector">
-                            <label><input type="radio" name="copilotLevel" value="user" checked> User-level</label>
-                            <label><input type="radio" name="copilotLevel" value="repo"> Repo-level</label>
-                        </div>
-                        <div id="copilotRepoPathGroup" style="display:none;margin-bottom:8px;">
-                            <input type="text" id="copilotRepoPath" class="input-field" placeholder="Repository path..." style="width:100%;">
-                        </div>
                         <button class="btn" id="btnToggleCopilotHooks" disabled>Loading...</button>
                     </div>
                 </div>
@@ -204,25 +199,6 @@
 
             <!-- Recent activity removed - use Live Logs page instead -->
         </main>
-    </div>
-
-    <!-- Quick Actions Bar (Creative) -->
-    <div class="quick-actions-bar" id="quickActionsBar">
-        <button class="qa-btn qa-trust" id="btnTrustSession" title="Trust this session - lower all thresholds">
-            <span class="qa-icon">&#x2714;</span> Trust Session
-        </button>
-        <button class="qa-btn qa-reset" id="btnReset" title="Reset to moderate profile">
-            <span class="qa-icon">&#x21bb;</span> Reset
-        </button>
-        <button class="qa-btn qa-lockdown" id="btnLockdown" title="Lockdown - disable all auto-approvals">
-            <span class="qa-icon">&#x1f512;</span> Lockdown
-        </button>
-        <button class="qa-btn qa-report" id="btnReport" title="Generate audit report">
-            <span class="qa-icon">&#x1f4cb;</span> Audit Report
-        </button>
-        <button class="qa-btn qa-shutdown" id="btnShutdown" title="Shut down Leash server">
-            <span class="qa-icon">&#x23FB;</span> Shutdown
-        </button>
     </div>
 
     <!-- Toast container -->

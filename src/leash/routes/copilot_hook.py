@@ -275,6 +275,7 @@ async def handle_copilot_hook(
         analyze_in_observe = getattr(app_config, "analyze_in_observe_mode", True) if app_config else True
         handler_mode = getattr(handler, "mode", "log-only")
         if mode == "observe" and not analyze_in_observe and handler_mode in {"llm-analysis", "llm-validation"}:
+            logger.debug("Skipping LLM analysis for %s/%s: observe mode with analyzeInObserveMode=false", hook_event, hook_tool)
             await _try_log_event(
                 session_manager, harness_client, trigger_svc, console_status, adaptive_svc,
                 hook_input, None, handler,
@@ -307,7 +308,8 @@ async def handle_copilot_hook(
                     session_id,
                 )
                 output = await handler_instance.handle(hook_input, handler, context)
-            except Exception:
+            except Exception as exc:
+                logger.error("Copilot handler execution failed for %s/%s: %s", hook_event, hook_tool, exc, exc_info=True)
                 return _NO_OPINION
 
         if output is None:
@@ -339,6 +341,11 @@ async def handle_copilot_hook(
             provider="copilot",
             cwd=getattr(hook_input, "cwd", None),
         )
+
+        # Observe mode: always return _NO_OPINION regardless of tray result.
+        # LLM analysis ran above for logging, but we never approve/deny.
+        if mode == "observe":
+            response = _NO_OPINION
 
         # Log after tray decision so the log reflects any user override
         await _try_log_event(

@@ -132,6 +132,65 @@ class HookInstaller:
             logger.error("Failed to uninstall hooks from %s: %s", self._settings_path, e)
             raise
 
+    def is_session_start_installed(self) -> bool:
+        """Check if a SessionStart hook with our marker exists in settings.json."""
+        try:
+            if not self._settings_path.exists():
+                return False
+            doc = self._load_settings()
+            hooks = doc.get("hooks")
+            if not hooks:
+                return False
+            for entry in hooks.get("SessionStart", []):
+                if self._is_our_hook_entry(entry):
+                    return True
+            return False
+        except Exception as e:
+            logger.warning("Failed to check SessionStart installation: %s", e)
+            return False
+
+    def install_session_start_only(self) -> None:
+        """Install ONLY the SessionStart hook (not other hook types)."""
+        doc = self._load_or_create_settings()
+        hooks: dict[str, Any] = doc.get("hooks", {})
+
+        # Remove existing SessionStart hooks with our marker
+        entries = hooks.get("SessionStart", [])
+        if isinstance(entries, list):
+            hooks["SessionStart"] = [e for e in entries if not self._is_our_hook_entry(e)]
+        else:
+            hooks["SessionStart"] = []
+
+        # Add new SessionStart hook
+        command = self._build_session_start_command()
+        hooks["SessionStart"].append({
+            "hooks": [{"type": "command", "command": command}],
+        })
+
+        doc["hooks"] = hooks
+        self._write_settings(doc)
+        logger.info("SessionStart hook installed")
+
+    def uninstall_session_start_only(self) -> None:
+        """Remove ONLY the SessionStart hooks with our marker."""
+        self._remove_session_start_script()
+
+        if not self._settings_path.exists():
+            return
+
+        doc = self._load_settings()
+        hooks = doc.get("hooks")
+        if not hooks:
+            return
+
+        entries = hooks.get("SessionStart", [])
+        if isinstance(entries, list):
+            hooks["SessionStart"] = [e for e in entries if not self._is_our_hook_entry(e)]
+
+        self._cleanup_empty_hooks(doc)
+        self._write_settings(doc)
+        logger.info("SessionStart hook uninstalled")
+
     def _build_session_start_command(self) -> str:
         script_path = self._write_session_start_script()
         if os.name == "nt":
@@ -251,11 +310,23 @@ class HookInstaller:
             "    $command = @(\n"
             f"{args_literal}\n"
             "    )\n"
-            "    $response = $inputData | & $command[0] $command[1..($command.Length - 1)] | Out-String\n"
-            "    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($response)) {\n"
-            "        Write-Output '{}'\n"
+            "    $job = Start-Job -ScriptBlock {\n"
+            "        param($cmd, $args_, $input_)\n"
+            "        $input_ | & $cmd $args_ | Out-String\n"
+            "    } -ArgumentList $command[0], $command[1..($command.Length - 1)], $inputData\n"
+            "    $completed = Wait-Job $job -Timeout 20\n"
+            "    if ($completed) {\n"
+            "        $response = Receive-Job $job\n"
+            "        Remove-Job $job -Force\n"
+            "        if ([string]::IsNullOrWhiteSpace($response)) {\n"
+            "            Write-Output '{}'\n"
+            "        } else {\n"
+            "            Write-Output $response.TrimEnd()\n"
+            "        }\n"
             "    } else {\n"
-            "        Write-Output $response.TrimEnd()\n"
+            "        Stop-Job $job -ErrorAction SilentlyContinue\n"
+            "        Remove-Job $job -Force -ErrorAction SilentlyContinue\n"
+            "        Write-Output '{}'\n"
             "    }\n"
             "} catch {\n"
             "    Write-Output '{}'\n"
