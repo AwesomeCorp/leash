@@ -50,7 +50,7 @@ class ClaudeCliClient(LLMClientBase):
         if config is None:
             raise ValueError("config is required")
         self._config = config
-        if not _is_valid_model_name(config.model):
+        if config.model and not _is_valid_model_name(config.model):
             raise ValueError("Model name contains invalid characters")
 
     async def query(self, prompt: str) -> LLMResponse:
@@ -125,10 +125,15 @@ class ClaudeCliClient(LLMClientBase):
 
     def _build_command_args(self, prompt: str) -> list[str]:
         """Build CLI arguments for the claude command."""
+        model = self._config.model
+        if self._config_manager is not None:
+            try:
+                model = self._config_manager.get_configuration().llm.model or model
+            except Exception:
+                pass
+
         args = [
             "-p",
-            "--model",
-            resolve_model_name(self._config.model),
             "--output-format",
             "text",
             "--no-session-persistence",
@@ -136,6 +141,8 @@ class ClaudeCliClient(LLMClientBase):
             "--settings",
             '{"disableAllHooks":true,"enableAllProjectMcpServers":false,"enableMcpServerCreation":false,"customSlashCommands":{}}',
         ]
+        if model:
+            args.extend(["--model", resolve_model_name(model)])
         if self._config.system_prompt:
             args.extend(["--system-prompt", self._config.system_prompt])
         args.append(prompt)

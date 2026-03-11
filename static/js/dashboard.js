@@ -2,32 +2,8 @@
    Dashboard Page Logic
    ========================================================================== */
 
-let lastActivityCount = 0;
-
 async function refreshData() {
-    await Promise.all([loadStats(), loadTrends(), loadActivity(), checkHealth(), loadInsights(), loadAdaptiveStats(), loadHooksStatus(), loadLatencyStats(), loadScoreDistribution()]);
-}
-
-// ---- Health Check (from completeness) ----
-async function checkHealth() {
-    try {
-        const response = await fetch('/health');
-        const data = await response.json();
-        const indicator = document.querySelector('.status-indicator');
-        const statusLabel = document.querySelector('.status-label');
-        if (data.status === 'healthy') {
-            if (indicator) indicator.classList.add('active');
-            if (statusLabel) statusLabel.textContent = 'Connected';
-        } else {
-            if (indicator) indicator.classList.remove('active');
-            if (statusLabel) statusLabel.textContent = 'Service Degraded';
-        }
-    } catch {
-        const indicator = document.querySelector('.status-indicator');
-        if (indicator) indicator.classList.remove('active');
-        const statusLabel = document.querySelector('.status-label');
-        if (statusLabel) statusLabel.textContent = 'Disconnected';
-    }
+    await Promise.all([loadStats(), loadTrends(), loadInsights(), loadAdaptiveStats(), loadHooksStatus(), loadLatencyStats(), loadScoreDistribution()]);
 }
 
 // ---- Stats ----
@@ -368,71 +344,6 @@ async function loadScoreDistribution(events) {
     document.getElementById('riskyCount').textContent = risky;
 }
 
-// ---- Activity Feed ----
-async function loadActivity() {
-    const list = document.getElementById('activityList');
-    if (!list) return;
-
-    try {
-        const events = await fetchApi('/api/dashboard/activity?limit=20');
-
-        if (events.length === 0) {
-            list.innerHTML = `
-                <div class="empty-state">
-                    <div class="empty-state-icon">\u{1F50D}</div>
-                    <h3>No activity yet</h3>
-                    <p>Permission analysis events will appear here as Claude Code or Copilot CLI makes tool calls through the hook system.</p>
-                </div>
-            `;
-            return;
-        }
-
-        // Check for new denied events (toast notification)
-        if (lastActivityCount > 0) {
-            const newDenied = events.filter((e, i) => i < events.length - lastActivityCount && e.decision === 'denied');
-            newDenied.forEach(e => {
-                Toast.show(
-                    'Permission Denied',
-                    `${e.toolName || 'Unknown tool'} was denied (score: ${e.safetyScore || 'N/A'})`,
-                    'danger'
-                );
-            });
-        }
-        lastActivityCount = events.length;
-
-        list.innerHTML = events.map(e => {
-            const decisionClass = getDecisionClass(e.decision);
-            const categoryClass = e.category === 'dangerous' ? 'denied' :
-                                  e.category === 'risky' ? 'cautious' : '';
-
-            return `
-                <div class="activity-item ${decisionClass} ${categoryClass}" role="article">
-                    <div class="activity-header">
-                        <span class="activity-tool">${escapeHtml(e.toolName || 'Unknown')}</span>
-                        <span class="activity-decision ${decisionClass}">${getDecisionLabel(e.decision)}</span>
-                    </div>
-                    ${e.reasoning ? `<div class="activity-reasoning">${escapeHtml(e.reasoning)}</div>` : ''}
-                    <div class="activity-meta">
-                        <span class="activity-time">${formatTime(e.timestamp)}</span>
-                        ${e.safetyScore != null ? `<span class="activity-score" style="${getScoreColorStyle(e.safetyScore, e.threshold)}">Score: ${e.safetyScore}</span>` : ''}
-                        ${e.category ? `<span class="activity-category">${escapeHtml(e.category)}</span>` : ''}
-                    </div>
-                </div>
-            `;
-        }).join('');
-
-        loadScoreDistribution(events);
-    } catch (error) {
-        list.innerHTML = `
-            <div class="error-state">
-                <h3>Failed to load activity</h3>
-                <p>${escapeHtml(error.message)}</p>
-                <button class="btn" onclick="loadActivity()">Retry</button>
-            </div>
-        `;
-    }
-}
-
 function showErrorState(id, title, message) {
     const el = document.getElementById(id);
     if (el) {
@@ -567,81 +478,6 @@ function loadAdaptiveStats() {
             });
         })
         .catch(function () { /* silently fail */ });
-}
-
-// ---- Quick Actions ----
-function initQuickActions() {
-    const btnTrust = document.getElementById('btnTrustSession');
-    const btnReset = document.getElementById('btnReset');
-    const btnLockdown = document.getElementById('btnLockdown');
-    const btnReport = document.getElementById('btnReport');
-
-    if (btnTrust) {
-        btnTrust.addEventListener('click', function () {
-            fetchApi('/api/quickactions/trust-session', { method: 'POST' })
-                .then(function (data) {
-                    Toast.show('Session Trusted', data.message, 'success');
-                    highlightProfile('permissive');
-                })
-                .catch(function (err) { Toast.show('Action Failed', 'Failed: ' + err.message, 'danger'); });
-        });
-    }
-
-    if (btnReset) {
-        btnReset.addEventListener('click', function () {
-            fetchApi('/api/quickactions/reset', { method: 'POST' })
-                .then(function (data) {
-                    Toast.show('Reset Complete', data.message, 'info');
-                    highlightProfile('moderate');
-                })
-                .catch(function (err) { Toast.show('Action Failed', 'Failed: ' + err.message, 'danger'); });
-        });
-    }
-
-    if (btnLockdown) {
-        btnLockdown.addEventListener('click', function () {
-            fetchApi('/api/quickactions/lockdown', { method: 'POST' })
-                .then(function (data) {
-                    Toast.show('Lockdown Active', data.message, 'warning');
-                    highlightProfile('lockdown');
-                })
-                .catch(function (err) { Toast.show('Action Failed', 'Failed: ' + err.message, 'danger'); });
-        });
-    }
-
-    if (btnReport) {
-        btnReport.addEventListener('click', function () {
-            const sessionId = prompt('Enter session ID for audit report:');
-            if (sessionId) {
-                window.open('/api/auditreport/' + encodeURIComponent(sessionId) + '/html', '_blank');
-            }
-        });
-    }
-
-    const btnShutdown = document.getElementById('btnShutdown');
-    if (btnShutdown) {
-        btnShutdown.addEventListener('click', function () {
-            if (!confirm('Are you sure you want to shut down Leash? Hooks will be uninstalled and all sessions will stop being monitored.')) {
-                return;
-            }
-            btnShutdown.disabled = true;
-            fetchApi('/api/shutdown', { method: 'POST' })
-                .then(function () {
-                    Toast.show('Shutdown', 'Leash is shutting down...', 'info');
-                })
-                .catch(function () {
-                    // Connection will likely be lost — that's expected
-                    Toast.show('Shutdown', 'Leash is shutting down...', 'info');
-                });
-        });
-    }
-}
-
-function highlightProfile(key) {
-    const cards = document.querySelectorAll('.profile-card');
-    cards.forEach(function (c) { c.classList.remove('active'); });
-    const card = document.querySelector('[data-profile="' + key + '"]');
-    if (card) card.classList.add('active');
 }
 
 // ---- Hooks Management ----
@@ -788,34 +624,15 @@ function initHooksControls() {
     }
 
     // Copilot hooks controls
-    var copilotLevelRadios = document.querySelectorAll('input[name="copilotLevel"]');
-    var repoPathGroup = document.getElementById('copilotRepoPathGroup');
-    copilotLevelRadios.forEach(function (radio) {
-        radio.addEventListener('change', function () {
-            if (repoPathGroup) {
-                repoPathGroup.style.display = this.value === 'repo' ? 'block' : 'none';
-            }
-        });
-    });
-
     var btnToggleCopilot = document.getElementById('btnToggleCopilotHooks');
     if (btnToggleCopilot) {
         btnToggleCopilot.addEventListener('click', function () {
             var badge = document.getElementById('copilotInstalledBadge');
             var isInstalled = badge && badge.textContent === 'Installed';
-            var level = document.querySelector('input[name="copilotLevel"]:checked');
-            var levelValue = level ? level.value : 'user';
-            var repoPath = document.getElementById('copilotRepoPath');
-            var repoPathValue = repoPath ? repoPath.value.trim() : '';
-
             var endpoint = isInstalled ? '/api/hooks/copilot/uninstall' : '/api/hooks/copilot/install';
-            var params = '?level=' + encodeURIComponent(levelValue);
-            if (levelValue === 'repo' && repoPathValue) {
-                params += '&repoPath=' + encodeURIComponent(repoPathValue);
-            }
 
             btnToggleCopilot.disabled = true;
-            fetchApi(endpoint + params, { method: 'POST' })
+            fetchApi(endpoint, { method: 'POST' })
                 .then(function (data) {
                     Toast.show('Copilot Hooks', data.message, 'success');
                     loadHooksStatus();
@@ -864,9 +681,8 @@ function initAnalyzeInObserveToggle() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-    // Initialize creative features
+    // Initialize features
     initProfileSwitcher();
-    initQuickActions();
     initHooksControls();
     initEnforcementModeCards();
     initAnalyzeInObserveToggle();

@@ -114,7 +114,7 @@ class TrayConfig(BaseModel):
     model_config = {"alias_generator": to_camel, "populate_by_name": True}
 
     enabled: bool = True
-    show_in_observe: bool = False
+    show_in_observe: bool = True
     show_in_approve_only: bool = True
     interactive_timeout_seconds: int = 10
     sound: bool = False
@@ -148,3 +148,4 @@ class Configuration(BaseModel):
     triggers: TriggerConfig = TriggerConfig()
     tray: TrayConfig = TrayConfig()
     hooks_user_uninstalled: bool = False
+    copilot_hooks_user_uninstalled: bool = False

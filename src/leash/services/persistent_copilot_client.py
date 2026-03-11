@@ -45,9 +45,10 @@ class PersistentCopilotClient(AcpClientBase):
         if not cmd:
             cmd = "copilot"
 
+        acp_flags = ["--acp", "--no-custom-instructions", "--disable-builtin-mcps"]
         if cmd.lower() == "gh":
-            return ("gh", ["copilot", "--acp", "--no-custom-instructions"])
-        return (cmd, ["--acp", "--no-custom-instructions"])
+            return ("gh", ["copilot", *acp_flags])
+        return (cmd, acp_flags)
 
     def _parse_assistant_text(self, text: str) -> LLMResponse:
         return parse_text_response(text)

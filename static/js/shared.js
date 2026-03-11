@@ -137,6 +137,59 @@ const ConnectionStatus = {
     }
 };
 
+// ---- Auto-Start Toggle ----
+const AutoStart = {
+    btn: null,
+    enabled: false,
+
+    init() {
+        this.btn = document.getElementById('btnAutoStart');
+        if (!this.btn) return;
+        this.btn.addEventListener('click', () => this.toggle());
+        this.checkStatus();
+    },
+
+    async checkStatus() {
+        try {
+            const data = await fetchApi('/api/hooks/session-start/status');
+            this.enabled = data.installed;
+            this.updateUI();
+        } catch {
+            // Non-fatal
+        }
+    },
+
+    async toggle() {
+        if (!this.btn) return;
+        this.btn.disabled = true;
+        try {
+            const endpoint = this.enabled
+                ? '/api/hooks/session-start/uninstall'
+                : '/api/hooks/session-start/install';
+            const data = await fetchApi(endpoint, { method: 'POST' });
+            this.enabled = data.installed;
+            this.updateUI();
+            Toast.show(
+                'Auto-Start',
+                this.enabled ? 'SessionStart hook installed — Leash will auto-start with Claude/Copilot' : 'SessionStart hook removed',
+                this.enabled ? 'success' : 'info'
+            );
+        } catch (err) {
+            Toast.show('Auto-Start', err.message, 'danger');
+        } finally {
+            this.btn.disabled = false;
+        }
+    },
+
+    updateUI() {
+        if (!this.btn) return;
+        this.btn.classList.toggle('active', this.enabled);
+        this.btn.title = this.enabled
+            ? 'Auto-start enabled (click to disable)'
+            : 'Auto-start disabled (click to enable)';
+    }
+};
+
 // ---- Keyboard Shortcuts ----
 const Shortcuts = {
     modal: null,
@@ -667,10 +720,23 @@ document.addEventListener('DOMContentLoaded', () => {
     Toast.init();
     ConnectionStatus.init();
     Shortcuts.init();
+    AutoStart.init();
     TerminalPanel.init();
 
     const themeBtn = document.getElementById('themeToggle');
     if (themeBtn) {
         themeBtn.addEventListener('click', () => Theme.toggle());
+    }
+
+    // Shutdown button (present on all pages)
+    const btnShutdown = document.getElementById('btnShutdown');
+    if (btnShutdown) {
+        btnShutdown.addEventListener('click', () => {
+            if (!confirm('Are you sure you want to shut down Leash? Hooks will be uninstalled and all sessions will stop being monitored.')) return;
+            btnShutdown.disabled = true;
+            fetchApi('/api/shutdown', { method: 'POST' })
+                .then(() => Toast.show('Shutdown', 'Leash is shutting down...', 'info'))
+                .catch(() => Toast.show('Shutdown', 'Leash is shutting down...', 'info'));
+        });
     }
 });

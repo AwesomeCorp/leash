@@ -63,20 +63,22 @@ async def update_config(request: Request) -> JSONResponse:
         await config_manager.update(config)
         logger.info("Configuration updated via API")
 
-        # Auto-reinstall hooks after config change (both Claude and Copilot)
-        hook_installer = _get_hook_installer(request)
-        if hook_installer is not None:
-            try:
-                hook_installer.install()
-            except Exception as hook_exc:
-                logger.warning("Failed to reinstall Claude hooks after config update: %s", hook_exc)
+        # Re-sync hooks after config change (respects user's uninstall decision)
+        if not config.hooks_user_uninstalled:
+            hook_installer = _get_hook_installer(request)
+            if hook_installer is not None:
+                try:
+                    hook_installer.install()
+                except Exception as hook_exc:
+                    logger.warning("Failed to reinstall Claude hooks after config update: %s", hook_exc)
 
-        copilot_installer = _get_copilot_hook_installer(request)
-        if copilot_installer is not None:
-            try:
-                copilot_installer.install_user()
-            except Exception as hook_exc:
-                logger.warning("Failed to reinstall Copilot hooks after config update: %s", hook_exc)
+        if not config.copilot_hooks_user_uninstalled:
+            copilot_installer = _get_copilot_hook_installer(request)
+            if copilot_installer is not None:
+                try:
+                    copilot_installer.install_user()
+                except Exception as hook_exc:
+                    logger.warning("Failed to reinstall Copilot hooks after config update: %s", hook_exc)
 
         return JSONResponse(content={"message": "Configuration updated successfully"})
     except ConfigurationException as exc:

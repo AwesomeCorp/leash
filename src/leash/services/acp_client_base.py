@@ -12,13 +12,16 @@ parsing.
 from __future__ import annotations
 
 import asyncio
+import glob as globmod
 import json
 import logging
 import os
 import shutil
+import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from leash import __version__
@@ -72,6 +75,80 @@ def _resolve_command_for_platform(cmd: str, args: list[str]) -> tuple[str, list[
         return "cmd", ["/c", resolved, *args]
 
     return cmd, args
+
+
+def _resolve_npx_package(package_name: str) -> tuple[str, str] | None:
+    """Resolve an npx package to (node_exe, script_path) by inspecting the npm cache.
+
+    On Windows, ``cmd /c npx.CMD`` doesn't properly forward stdin/stdout for
+    persistent/interactive processes.  This function finds the cached entry
+    point so we can invoke ``node <script>`` directly, bypassing cmd.exe.
+
+    Returns ``None`` if the package is not cached or node is not found.
+    """
+    node = shutil.which("node")
+    if node is None:
+        return None
+
+    # Determine npm cache directory
+    cache_dir: str | None = None
+    try:
+        result = subprocess.run(
+            ["npm", "config", "get", "cache"],
+            capture_output=True, text=True, timeout=10,
+            # npm on Windows is a .cmd; need shell to resolve it
+            shell=(sys.platform == "win32"),
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            cache_dir = result.stdout.strip()
+    except Exception:
+        pass
+
+    if not cache_dir and sys.platform == "win32":
+        cache_dir = str(Path.home() / "AppData" / "Local" / "npm-cache")
+
+    if not cache_dir or not Path(cache_dir).is_dir():
+        return None
+
+    # Search _npx cache directories for the package
+    pattern = str(Path(cache_dir) / "_npx" / "*" / "node_modules" / package_name / "package.json")
+    matches = globmod.glob(pattern)
+    if not matches:
+        return None
+
+    # Use the most recently modified match
+    matches.sort(key=os.path.getmtime, reverse=True)
+    pkg_json_path = matches[0]
+
+    try:
+        with open(pkg_json_path, encoding="utf-8") as f:
+            pkg = json.load(f)
+    except Exception:
+        return None
+
+    bin_field = pkg.get("bin")
+    if bin_field is None:
+        return None
+
+    # bin can be a string or a dict
+    if isinstance(bin_field, str):
+        entry = bin_field
+    elif isinstance(bin_field, dict):
+        # Prefer an entry matching the package's short name, else take first
+        short_name = package_name.rsplit("/", 1)[-1]
+        entry = bin_field.get(short_name) or next(iter(bin_field.values()), None)
+        if entry is None:
+            return None
+    else:
+        return None
+
+    pkg_dir = str(Path(pkg_json_path).parent)
+    script_path = str(Path(pkg_dir) / entry)
+    if not Path(script_path).is_file():
+        return None
+
+    logger.debug("Resolved npx package %s -> node %s", package_name, script_path)
+    return (node, script_path)
 
 
 class AcpClientBase(LLMClientBase):
@@ -297,8 +374,9 @@ class AcpClientBase(LLMClientBase):
                 prefixes = llm_cfg.prompt_prefixes
                 suffixes = llm_cfg.prompt_suffixes
             except Exception:
-                pass
+                logger.warning("[%s] Failed to read prompt sequences from config", self._label, exc_info=True)
         return prefixes, suffixes
+
 
     async def _try_acp_query(self, prompt: str) -> LLMResponse | None:
         """Attempt a query via ACP. Returns None on failure."""
@@ -322,12 +400,21 @@ class AcpClientBase(LLMClientBase):
             start = time.monotonic()
             deadline = start + (timeout / 1000.0)
 
-            # Create a fresh session for each query to avoid context accumulation
-            session_id = await self._acp_new_session(proc, deadline)
-            if session_id is None:
-                self._increment_failures_and_maybe_kill()
-                return None
-            self._session_id = session_id
+            # Reuse existing ACP session to avoid expensive session/new calls.
+            # Each prompt is self-contained (full system prompt + tool details)
+            # so context accumulation is not a concern.
+            session_ms = 0
+            if self._session_id is None or self._session_id == "initialized":
+                session_id = await self._acp_new_session(proc, deadline)
+                if session_id is None:
+                    # session/new failures are transient backend issues —
+                    # don't kill the process, just fail this query
+                    logger.warning("[%s] session/new failed, skipping (process kept alive)", self._label)
+                    return None
+                self._session_id = session_id
+                session_ms = int((time.monotonic() - start) * 1000)
+            else:
+                session_id = self._session_id
 
             # Send prefix messages
             prefixes, suffixes = self._get_prompt_sequences()
@@ -338,21 +425,26 @@ class AcpClientBase(LLMClientBase):
                 _, ok = await self._acp_prompt(proc, session_id, prefix, deadline)
                 if not ok:
                     logger.warning("[%s] Prefix did not complete: %s", self._label, prefix)
+                    self._session_id = "initialized"
                     self._increment_failures_and_maybe_kill()
                     return None
 
             # Send actual prompt
+            prompt_start = time.monotonic()
             assistant_text, got_result = await self._acp_prompt(proc, session_id, prompt, deadline)
 
             if not got_result:
                 elapsed_ms = int((time.monotonic() - start) * 1000)
-                self._push_terminal(f"persistent-{self._label}", "stderr", f"[PID {pid}] Timeout — no result after {elapsed_ms}ms")
-                logger.warning("[%s] No result after %dms", self._label, elapsed_ms)
+                self._push_terminal(f"persistent-{self._label}", "stderr", f"[PID {pid}] Timeout — no result after {elapsed_ms}ms (session: {session_ms}ms)")
+                logger.warning("[%s] No result after %dms (session: %dms)", self._label, elapsed_ms, session_ms)
+                # Force fresh session on next attempt (current session may be stale)
+                self._session_id = "initialized"
                 self._increment_failures_and_maybe_kill()
                 return None
 
+            prompt_ms = int((time.monotonic() - prompt_start) * 1000)
             elapsed_ms = int((time.monotonic() - start) * 1000)
-            logger.info("[%s] Result received in %dms", self._label, elapsed_ms)
+            logger.info("[%s] Result in %dms (session: %dms, prompt: %dms)", self._label, elapsed_ms, session_ms, prompt_ms)
 
             # Send suffix messages
             for suffix in suffixes:
@@ -366,7 +458,7 @@ class AcpClientBase(LLMClientBase):
 
             parsed = self._parse_assistant_text(assistant_text or "")
             parsed.elapsed_ms = elapsed_ms
-            self._push_terminal(f"persistent-{self._label}", "info", f"[PID {pid}] Result in {elapsed_ms}ms — score={parsed.safety_score}, category={parsed.category}")
+            self._push_terminal(f"persistent-{self._label}", "info", f"[PID {pid}] Result in {elapsed_ms}ms (session: {session_ms}ms, prompt: {prompt_ms}ms) — score={parsed.safety_score}, category={parsed.category}")
             return parsed
 
         except asyncio.CancelledError:
@@ -416,7 +508,7 @@ class AcpClientBase(LLMClientBase):
                 await self._kill_process()
                 return False
 
-            # ACP handshake
+            # ACP handshake (initialize only — session created per-query)
             deadline = time.monotonic() + 15.0
             if not await self._acp_initialize(self._process, deadline):
                 self._push_terminal(f"persistent-{self._label}", "stderr", f"[PID {pid}] ACP handshake failed")
@@ -425,12 +517,8 @@ class AcpClientBase(LLMClientBase):
 
             self._push_terminal(f"persistent-{self._label}", "info", f"[PID {pid}] ACP handshake complete")
 
-            session_id = await self._acp_new_session(self._process, deadline)
-            if session_id is None:
-                await self._kill_process()
-                return False
-
-            self._session_id = session_id
+            # Mark as ready — _try_acp_query creates a fresh session per query
+            self._session_id = "initialized"
             return True
 
         except FileNotFoundError:
@@ -466,7 +554,9 @@ class AcpClientBase(LLMClientBase):
     def _increment_failures_and_maybe_kill(self) -> None:
         self._consecutive_failures += 1
         if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
-            self._kill_task = asyncio.create_task(self._kill_process())
+            task = asyncio.create_task(self._kill_process())
+            task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+            self._kill_task = task
 
     async def _kill_process(self) -> None:
         proc = self._process
@@ -487,7 +577,10 @@ class AcpClientBase(LLMClientBase):
                         try:
                             await asyncio.wait_for(proc.wait(), timeout=2.0)
                         except asyncio.TimeoutError:
-                            pass
+                            logger.error(
+                                "[%s] Process PID %s did not exit after kill — zombie process may remain",
+                                self._label, proc.pid,
+                            )
             except ProcessLookupError:
                 pass
             except Exception as exc:

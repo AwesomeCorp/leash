@@ -178,6 +178,7 @@ class ConsoleStatusService:
             self._schedule_render()
 
     def _render(self) -> None:
+        self._cols, self._rows = _terminal_size()
         cols, rows = self._cols, self._rows
         mode = self._enforcement.mode.upper()
         hooks_label = "Hooks: installed" if self._hooks_installed else "Hooks: NOT installed"

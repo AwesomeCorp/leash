@@ -10,6 +10,7 @@ import pkgutil
 import signal
 import sys
 import sysconfig
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -224,6 +225,46 @@ async def lifespan(app: FastAPI):
     transcript_watcher.start()
     asyncio.create_task(transcript_watcher.preload_projects())
 
+    # Warm up npx package cache for persistent Claude ACP (background, non-blocking)
+    async def _warmup_acp_package() -> None:
+        proc = None
+        try:
+            provider = config.llm.provider or "anthropic-api"
+            if provider != "claude-persistent":
+                return
+            package = "@zed-industries/claude-agent-acp"
+            logger.info("Warming up npx package: %s", package)
+            cmd = "npx"
+            args = ["--yes", package, "--version"]
+            if sys.platform == "win32":
+                import shutil
+                resolved = shutil.which(cmd)
+                if resolved and resolved.lower().endswith((".cmd", ".bat")):
+                    cmd = "cmd"
+                    args = ["/c", resolved, "--yes", package, "--version"]
+            proc = await asyncio.create_subprocess_exec(
+                cmd, *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+            if proc.returncode == 0:
+                logger.info("npx warmup complete: %s", stdout.decode(errors="replace").strip())
+            else:
+                logger.warning("npx warmup exited %d: %s", proc.returncode, stderr.decode(errors="replace").strip()[:200])
+        except asyncio.TimeoutError:
+            logger.warning("npx warmup timed out after 120s")
+            if proc is not None:
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except Exception:
+                    pass
+        except Exception:
+            logger.debug("npx warmup failed", exc_info=True)
+
+    asyncio.create_task(_warmup_acp_package())
+
     # Start tray service
     try:
         await tray_svc.start()
@@ -276,12 +317,23 @@ async def lifespan(app: FastAPI):
 
     # Route log messages from leash and uvicorn to the console log section
     class _ConsoleLogHandler(logging.Handler):
+        _NOISY_PATTERNS = (
+            "GET /api/dashboard/",
+            "GET /api/terminal/",
+            "GET /api/hooks/status",
+            "GET /health",
+        )
+
         def emit(self, record: logging.LogRecord) -> None:
             try:
                 msg = self.format(record)
+                # Skip noisy polling endpoint messages in console (still logged to file)
+                for pattern in self._NOISY_PATTERNS:
+                    if pattern in msg:
+                        return
                 console_status_svc.log(msg)
             except Exception:
-                pass
+                self.handleError(record)
 
     _console_handler = _ConsoleLogHandler()
     _console_handler.setLevel(logging.INFO)
@@ -371,8 +423,18 @@ async def lifespan(app: FastAPI):
         await asyncio.wait_for(_graceful_cleanup(), timeout=5.0)
         logger.info("Graceful shutdown complete")
     except asyncio.TimeoutError:
-        logger.error("Graceful shutdown timed out after 5s, forcing exit")
-        os._exit(1)
+        logger.error("Graceful shutdown timed out after 5s")
+
+    # Schedule a hard exit to ensure the process terminates even if
+    # background threads (tray, SSE connections) keep it alive.
+    # Use a daemon thread so it doesn't block Python's natural shutdown.
+    def _deferred_exit() -> None:
+        import time as _time
+        _time.sleep(2.0)
+        os._exit(0)
+
+    _exit_thread = threading.Thread(target=_deferred_exit, daemon=True)
+    _exit_thread.start()
 
 
 def create_app(config_path: str | None = None) -> FastAPI:

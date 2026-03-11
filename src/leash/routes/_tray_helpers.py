@@ -1,12 +1,25 @@
 """Shared tray notification helpers for hook endpoints.
 
 Tray behavior by mode:
-- **Enforce**: No tray at all. LLM result is enforced silently.
-- **Observe**: Tray only if ``show_in_observe`` is True (default False).
-  Only fires when LLM analysis is enabled. Informational only.
-- **Approve-only**: Can only approve safe requests. Unsafe requests are
-  silently ignored (empty response) so the CLI asks the user normally.
-  Tray shows informational alerts if enabled but never denies.
+
+- **Observe** ("logging only"):
+  NEVER approve or deny. Always returns ``_NO_OPINION``.
+  If tray is enabled (``tray_config.enabled and tray_config.show_in_observe``),
+  shows informational-only alerts via ``show_alert()`` (no buttons).
+
+- **Approve-only**:
+  Safe requests (score >= threshold) are approved via ``harness_client``.
+  Unsafe requests are NEVER auto-denied.
+  If tray is enabled (``tray_config.enabled and tray_config.show_in_approve_only``),
+  shows an interactive tray dialog (Approve/Deny/Ignore).
+  On timeout the response is ``_NO_OPINION`` (never deny on timeout).
+
+- **Enforce**:
+  Safe requests (score >= threshold) are approved.
+  Unsafe requests default to DENY.
+  If tray is enabled (``tray_config.enabled``), shows an interactive tray
+  dialog so the user can override the system deny.
+  On timeout the deny is executed.
 """
 
 from __future__ import annotations
@@ -109,69 +122,117 @@ async def make_tray_decision(
     timeout = getattr(tray_config, "interactive_timeout_seconds", 10) if tray_config else 10
     sound = getattr(tray_config, "sound", False) if tray_config else False
 
-    # ── Enforce mode: no tray, just enforce ──
-    if mode == "enforce":
-        if auto_approved and harness_client is not None:
-            return JSONResponse(content=harness_client.format_response(event, output))
-        # Deny
-        if harness_client is not None:
-            return JSONResponse(content=harness_client.format_response(event, output))
-        return _NO_OPINION
-
-    # ── Determine if tray is enabled for this mode ──
+    # ── Determine if tray is active for this mode ──
     tray_active = False
     if tray_config and getattr(tray_config, "enabled", False):
         if mode == "observe" and getattr(tray_config, "show_in_observe", False):
             tray_active = True
         elif mode == "approve-only" and getattr(tray_config, "show_in_approve_only", True):
             tray_active = True
+        elif mode == "enforce":
+            tray_active = True
 
-    # ── Approved (score >= threshold): silent ──
-    if auto_approved:
-        if harness_client is not None:
-            return JSONResponse(content=harness_client.format_response(event, output))
-        return _NO_OPINION
-
-    # ── Approve-only: never deny, return no response for unsafe requests ──
-    if mode == "approve-only":
-        # Show informational tray alert so the user knows, but never deny
+    # ── Observe mode: NEVER approve or deny ──
+    if mode == "observe":
         if tray_active and notification_svc is not None:
-            level = NotificationLevel.DANGER if score <= 0 else NotificationLevel.WARNING
+            level = NotificationLevel.DANGER if score <= 0 else (
+                NotificationLevel.INFO if auto_approved else NotificationLevel.WARNING
+            )
             info = _build_info(tool_name, output, cwd, provider, None, level, sound)
             info.title = f"Leash: {tool_name or 'unknown'} (score {score})"
             try:
                 await notification_svc.show_alert(info)
             except Exception:
-                logger.debug("Failed to show alert for %s", tool_name, exc_info=True)
+                logger.debug("Failed to show observe alert for %s", tool_name, exc_info=True)
         return _NO_OPINION
 
-    # ── Not approved: decide based on score (observe / enforce fallthrough) ──
-
-    if score <= 0:
-        # Clearly dangerous: informational alert (no buttons)
-        if tray_active and notification_svc is not None:
-            info = _build_info(tool_name, output, cwd, provider, None, NotificationLevel.DANGER, sound)
-            info.title = f"Leash: {tool_name or 'unknown'} DENIED"
-            try:
-                await notification_svc.show_alert(info)
-            except Exception:
-                logger.debug("Failed to show denial alert for %s", tool_name, exc_info=True)
-
-        # Observe: do nothing
+    # ── Auto-approved (score >= threshold): approve in both approve-only and enforce ──
+    if auto_approved:
+        if harness_client is not None:
+            return JSONResponse(content=harness_client.format_response(event, output))
         return _NO_OPINION
 
-    # Score > 0 and < threshold: uncertain — interactive toast
+    # ── Unsafe request: mode-specific handling ──
+
+    if mode == "approve-only":
+        # Never auto-deny. Show interactive tray if available, else _NO_OPINION.
+        return await _handle_unsafe_with_tray(
+            mode=mode,
+            output=output,
+            harness_client=harness_client,
+            event=event,
+            tool_name=tool_name,
+            notification_svc=notification_svc,
+            pending_decision_svc=pending_decision_svc,
+            tray_active=tray_active,
+            timeout=timeout,
+            score=score,
+            sound=sound,
+            cwd=cwd,
+            provider=provider,
+        )
+
+    if mode == "enforce":
+        # Default action is DENY. Show interactive tray if available to let user override.
+        return await _handle_unsafe_with_tray(
+            mode=mode,
+            output=output,
+            harness_client=harness_client,
+            event=event,
+            tool_name=tool_name,
+            notification_svc=notification_svc,
+            pending_decision_svc=pending_decision_svc,
+            tray_active=tray_active,
+            timeout=timeout,
+            score=score,
+            sound=sound,
+            cwd=cwd,
+            provider=provider,
+        )
+
+    # Unknown mode: safe fallback
+    return _NO_OPINION
+
+
+async def _handle_unsafe_with_tray(
+    *,
+    mode: str,
+    output: Any,
+    harness_client: Any,
+    event: str,
+    tool_name: str,
+    notification_svc: NotificationService | None,
+    pending_decision_svc: PendingDecisionService | None,
+    tray_active: bool,
+    timeout: int,
+    score: int,
+    sound: bool,
+    cwd: str | None,
+    provider: str,
+) -> JSONResponse:
+    """Handle an unsafe request with optional interactive tray dialog.
+
+    In approve-only mode, fallback (no tray / timeout) is _NO_OPINION.
+    In enforce mode, fallback (no tray / timeout) is DENY.
+    """
+    level = NotificationLevel.DANGER if score <= 0 else NotificationLevel.WARNING
+
+    if mode == "enforce":
+        title_prefix = f"Leash [DENY]: {tool_name or 'unknown'}"
+    else:
+        title_prefix = f"Leash: {tool_name or 'unknown'} needs review"
+
+    # Try interactive tray
     if tray_active and notification_svc is not None and pending_decision_svc is not None:
-        info = _build_info(tool_name, output, cwd, provider, timeout, NotificationLevel.WARNING, sound)
-        info.title = f"Leash: {tool_name or 'unknown'} needs review"
+        info = _build_info(tool_name, output, cwd, provider, timeout, level, sound)
+        info.title = title_prefix
 
         try:
             decision_id, future = pending_decision_svc.create_pending(info, timeout)
         except Exception:
             logger.warning("Failed to create pending decision for %s", tool_name, exc_info=True)
-            return _NO_OPINION
+            return _default_unsafe_response(mode, output, harness_client, event)
 
-        # Try interactive toast — shows one toast with Approve/Deny/Ignore buttons
         interactive_handled = False
         if getattr(notification_svc, "supports_interactive", False):
             try:
@@ -182,31 +243,41 @@ async def make_tray_decision(
                 else:
                     pending_decision_svc.cancel(decision_id)
 
-                result = _apply_tray_result(result, output, harness_client, event, mode)
-                if result is not None:
-                    return result
+                return _apply_tray_result(result, output, harness_client, event, mode)
             except Exception:
                 logger.debug("Interactive toast failed for %s", tool_name, exc_info=True)
 
-        # Fall back only if interactive toast was not shown (e.g. not supported)
+        # Fallback: show passive alert + wait for pending decision from API
         if not interactive_handled:
             try:
                 await notification_svc.show_alert(info)
             except Exception:
-                pass
+                logger.warning("Failed to show passive alert for %s", tool_name, exc_info=True)
 
             try:
                 result = await future
-                applied = _apply_tray_result(result, output, harness_client, event, mode)
-                if applied is not None:
-                    return applied
+                return _apply_tray_result(result, output, harness_client, event, mode)
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pending_decision_svc.cancel(decision_id)
             except Exception:
                 pending_decision_svc.cancel(decision_id)
 
-    # No tray or tray not available: fall through, let Claude ask the user
-    logger.debug("%s mode - %s (score=%s) falling through to user", mode, tool_name, score)
+    # No tray or tray not available: use default for mode
+    logger.debug("%s mode - %s (score=%s) falling through to default", mode, tool_name, score)
+    return _default_unsafe_response(mode, output, harness_client, event)
+
+
+def _default_unsafe_response(
+    mode: str, output: Any, harness_client: Any, event: str,
+) -> JSONResponse:
+    """Return the default response when there is no tray interaction.
+
+    approve-only -> _NO_OPINION (never auto-deny)
+    enforce      -> DENY via harness_client
+    """
+    if mode == "enforce" and harness_client is not None:
+        output.auto_approve = False
+        return JSONResponse(content=harness_client.format_response(event, output))
     return _NO_OPINION
 
 
@@ -216,26 +287,33 @@ def _apply_tray_result(
     harness_client: Any,
     event: str,
     mode: str,
-) -> JSONResponse | None:
-    """Convert a tray decision into a response. Returns None if no action taken."""
-    if result == TrayDecision.APPROVE and harness_client is not None:
+) -> JSONResponse:
+    """Convert a tray decision into a JSONResponse.
+
+    Always returns a response: approve, deny, or _NO_OPINION.
+    Timeout behavior is mode-specific (enforce=deny, approve-only=no-opinion).
+    """
+    if result == TrayDecision.APPROVE:
         output.auto_approve = True
         output.tray_decision = "tray-approved"
-        return JSONResponse(content=harness_client.format_response(event, output))
-
-    if result == TrayDecision.DENY and harness_client is not None:
-        output.tray_decision = "tray-denied"
-        return JSONResponse(content=harness_client.format_response(event, output))
-
-    if result == TrayDecision.IGNORE:
-        # Ignore = ask the user directly (not auto-allow, not deny)
-        output.tray_decision = "tray-ignored"
         if harness_client is not None:
             return JSONResponse(content=harness_client.format_response(event, output))
         return _NO_OPINION
 
-    # None (timeout/dismissed) — ask the user directly
+    if result == TrayDecision.DENY:
+        output.tray_decision = "tray-denied"
+        if harness_client is not None:
+            return JSONResponse(content=harness_client.format_response(event, output))
+        return _NO_OPINION
+
+    if result == TrayDecision.IGNORE:
+        output.tray_decision = "tray-ignored"
+        return _NO_OPINION
+
+    # None (timeout/dismissed) — mode-specific behavior
     output.tray_decision = "tray-timeout"
-    if harness_client is not None:
+    if mode == "enforce" and harness_client is not None:
+        # Enforce: timeout means deny
         return JSONResponse(content=harness_client.format_response(event, output))
+    # Approve-only: timeout means _NO_OPINION (never auto-deny)
     return _NO_OPINION

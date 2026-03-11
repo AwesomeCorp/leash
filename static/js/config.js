@@ -7,6 +7,11 @@ let isDirty = false;
 
 /* Hook handlers local state - edited independently from the config form fields */
 let hookHandlersDirty = false;
+
+/* Debounce timers for auto-save */
+var _configSaveTimer = null;
+var _hookHandlersSaveTimer = null;
+var _AUTO_SAVE_DELAY = 800; // ms
 let promptTemplateNames = [];
 
 const HOOK_EVENT_TYPES = [
@@ -70,12 +75,9 @@ async function loadConfig() {
         currentConfig = await fetchApi('/api/config');
         renderConfig(currentConfig);
         isDirty = false;
-        updateSaveButton();
-        // Also render hook handlers
         await loadPromptTemplates();
         renderHookHandlers();
         hookHandlersDirty = false;
-        updateHookHandlersSaveButton();
     } catch (error) {
         container.innerHTML = `
             <div class="error-state">
@@ -140,6 +142,7 @@ function renderConfig(config) {
                     <option value="anthropic-api" ${(config.llm?.provider || 'anthropic-api') === 'anthropic-api' ? 'selected' : ''}>Anthropic API (Direct)</option>
                     <option value="claude-cli" ${config.llm?.provider === 'claude-cli' ? 'selected' : ''}>Claude Code CLI (One-shot)</option>
                     <option value="claude-persistent" ${config.llm?.provider === 'claude-persistent' ? 'selected' : ''}>Claude Code CLI (Persistent)</option>
+                    <option value="claude-stream" ${config.llm?.provider === 'claude-stream' ? 'selected' : ''}>Claude Code CLI (Stream)</option>
                     <option value="copilot-cli" ${config.llm?.provider === 'copilot-cli' ? 'selected' : ''}>GitHub Copilot CLI (One-shot)</option>
                     <option value="copilot-persistent" ${config.llm?.provider === 'copilot-persistent' ? 'selected' : ''}>GitHub Copilot CLI (Persistent)</option>
                     <option value="generic-rest" ${config.llm?.provider === 'generic-rest' ? 'selected' : ''}>Generic REST API</option>
@@ -470,18 +473,14 @@ function renderConfig(config) {
             </div>
         </div>
 
-        <div class="config-actions">
-            <button class="btn" onclick="loadConfig()">Reset</button>
-            <button class="btn btn-primary" id="saveConfigBtn" onclick="saveConfig()" disabled>Save Changes</button>
-        </div>
     `;
 
-    // Add change listeners (use both 'input' and 'change' for <select> compatibility)
+    // Add change listeners — auto-save on change with debounce
     container.querySelectorAll('.config-input').forEach(input => {
         const eventType = input.tagName === 'SELECT' ? 'change' : 'input';
         input.addEventListener(eventType, () => {
             isDirty = true;
-            updateSaveButton();
+            _scheduleConfigAutoSave();
         });
     });
 
@@ -501,27 +500,19 @@ function updateProviderFields() {
     if (restFields) restFields.style.display = provider === 'generic-rest' ? 'block' : 'none';
 }
 
-function updateSaveButton() {
-    const btn = document.getElementById('saveConfigBtn');
-    if (btn) {
-        btn.disabled = !isDirty;
-    }
+function _scheduleConfigAutoSave() {
+    if (_configSaveTimer) clearTimeout(_configSaveTimer);
+    _configSaveTimer = setTimeout(function() { saveConfig(); }, _AUTO_SAVE_DELAY);
 }
 
-function updateHookHandlersSaveButton() {
-    const btn = document.getElementById('saveHookHandlersBtn');
-    const indicator = document.getElementById('hookHandlersDirtyIndicator');
-    if (btn) {
-        btn.disabled = !hookHandlersDirty;
-    }
-    if (indicator) {
-        indicator.style.display = hookHandlersDirty ? 'inline' : 'none';
-    }
+function _scheduleHookHandlersAutoSave() {
+    if (_hookHandlersSaveTimer) clearTimeout(_hookHandlersSaveTimer);
+    _hookHandlersSaveTimer = setTimeout(function() { saveHookHandlers(); }, _AUTO_SAVE_DELAY);
 }
 
 function markHookHandlersDirty() {
     hookHandlersDirty = true;
-    updateHookHandlersSaveButton();
+    _scheduleHookHandlersAutoSave();
 }
 
 async function saveConfig() {
@@ -549,32 +540,22 @@ async function saveConfig() {
         if (input.dataset.type === 'bool') {
             obj[key] = input.value === 'true';
         } else if (input.dataset.type === 'string-array') {
-            // Split textarea lines into an array, filtering empty lines
             obj[key] = (input.value || '').split('\n').map(s => s.trim()).filter(s => s.length > 0);
         } else if (input.type === 'number') {
             obj[key] = parseInt(input.value, 10);
         } else if (key === 'headers' && input.tagName === 'TEXTAREA') {
-            // Parse JSON for headers field
             try {
                 obj[key] = JSON.parse(input.value || '{}');
             } catch {
                 obj[key] = {};
             }
         } else {
-            // Store empty strings as null for optional fields
             obj[key] = input.value || null;
         }
     });
 
-    // Sync enforcementEnabled bool with enforcementMode
     if (updated.enforcementMode) {
         updated.enforcementEnabled = updated.enforcementMode === 'enforce' || updated.enforcementMode === 'approve-only';
-    }
-
-    const btn = document.getElementById('saveConfigBtn');
-    if (btn) {
-        btn.disabled = true;
-        btn.textContent = 'Saving...';
     }
 
     try {
@@ -591,14 +572,9 @@ async function saveConfig() {
 
         currentConfig = updated;
         isDirty = false;
-        Toast.show('Configuration Saved', 'Changes have been saved successfully. Some changes may require a restart.', 'success');
+        Toast.show('Settings Updated', 'Configuration saved successfully.', 'success', 2000);
     } catch (error) {
         Toast.show('Save Failed', error.message, 'danger');
-    } finally {
-        if (btn) {
-            btn.textContent = 'Save Changes';
-            updateSaveButton();
-        }
     }
 }
 
@@ -959,28 +935,16 @@ function renderEventHandlers(eventType) {
 async function saveHookHandlers() {
     if (!currentConfig || !hookHandlersDirty) return;
 
-    const btn = document.getElementById('saveHookHandlersBtn');
-    if (btn) {
-        btn.disabled = true;
-        btn.textContent = 'Saving...';
-    }
-
     try {
-        // Build a full config to PUT, merging current config with hook handler changes
-        const updated = JSON.parse(JSON.stringify(currentConfig));
+        var updated = JSON.parse(JSON.stringify(currentConfig));
 
-        // Clean up empty prompt templates (convert null/empty to undefined so JSON omits them)
         if (updated.hookHandlers) {
-            for (const eventType of Object.keys(updated.hookHandlers)) {
-                const ec = updated.hookHandlers[eventType];
+            for (var eventType of Object.keys(updated.hookHandlers)) {
+                var ec = updated.hookHandlers[eventType];
                 if (ec && ec.handlers) {
-                    ec.handlers.forEach(h => {
-                        if (!h.promptTemplate) {
-                            delete h.promptTemplate;
-                        }
-                        if (h.config && Object.keys(h.config).length === 0) {
-                            delete h.config;
-                        }
+                    ec.handlers.forEach(function(h) {
+                        if (!h.promptTemplate) delete h.promptTemplate;
+                        if (h.config && Object.keys(h.config).length === 0) delete h.config;
                     });
                 }
             }
@@ -994,27 +958,18 @@ async function saveHookHandlers() {
 
         currentConfig = updated;
         hookHandlersDirty = false;
-        updateHookHandlersSaveButton();
 
-        // Auto-sync: reinstall hooks in Claude's settings.json so they match the updated config
+        // Auto-sync hooks
         try {
             var hooksStatus = await (await fetch('/api/hooks/status')).json();
             if (hooksStatus.installed) {
                 await fetch('/api/hooks/install', { method: 'POST' });
-                Toast.show('Hook Handlers Saved', 'Configuration saved and hooks updated.', 'success');
-            } else {
-                Toast.show('Hook Handlers Saved', 'Configuration saved. Install hooks from Dashboard to activate.', 'success');
             }
-        } catch {
-            Toast.show('Hook Handlers Saved', 'Configuration saved (hooks sync skipped).', 'success');
-        }
+        } catch { /* non-fatal */ }
+
+        Toast.show('Handlers Updated', 'Hook handler configuration saved.', 'success', 2000);
     } catch (error) {
         Toast.show('Save Failed', error.message, 'danger');
-    } finally {
-        if (btn) {
-            btn.textContent = 'Save Handlers';
-            updateHookHandlersSaveButton();
-        }
     }
 }
 

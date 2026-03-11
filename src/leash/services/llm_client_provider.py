@@ -15,6 +15,7 @@ from leash.services.claude_cli_client import ClaudeCliClient
 from leash.services.copilot_cli_client import CopilotCliClient
 from leash.services.generic_rest_client import GenericRestClient
 from leash.services.persistent_claude_client import PersistentClaudeClient
+from leash.services.persistent_claude_stream_client import PersistentClaudeStreamClient
 from leash.services.persistent_copilot_client import PersistentCopilotClient
 
 if TYPE_CHECKING:
@@ -70,6 +71,7 @@ class LLMClientProvider:
         self._lock = asyncio.Lock()
         self._cached_client: LLMClient | None = None
         self._cached_provider: str | None = None
+        self._cached_model: str | None = None
 
         self._session_lock = asyncio.Lock()
         self._session_clients: dict[str, _SessionClientEntry] = {}
@@ -80,6 +82,7 @@ class LLMClientProvider:
             "anthropic-api": self._create_anthropic_api_client,
             "claude-cli": self._create_claude_cli_client,
             "claude-persistent": self._create_persistent_claude_client,
+            "claude-stream": self._create_persistent_claude_stream_client,
             "copilot-cli": self._create_copilot_cli_client,
             "copilot-persistent": self._create_persistent_copilot_client,
             "generic-rest": self._create_generic_rest_client,
@@ -107,6 +110,13 @@ class LLMClientProvider:
 
     def _create_persistent_claude_client(self, config: LlmConfig) -> LLMClient:
         return PersistentClaudeClient(  # type: ignore[return-value]
+            config=config,
+            config_manager=self._config_manager,
+            terminal_output=self._terminal_output,
+        )
+
+    def _create_persistent_claude_stream_client(self, config: LlmConfig) -> LLMClient:
+        return PersistentClaudeStreamClient(  # type: ignore[return-value]
             config=config,
             config_manager=self._config_manager,
             terminal_output=self._terminal_output,
@@ -155,18 +165,27 @@ class LLMClientProvider:
         """
         config = self._config_manager.get_configuration()
         provider = config.llm.provider or "anthropic-api"
+        model = config.llm.model or ""
 
         async with self._lock:
-            # Return cached client if provider hasn't changed
-            if self._cached_client is not None and self._cached_provider == provider:
+            # Return cached client if provider and model haven't changed
+            if (
+                self._cached_client is not None
+                and self._cached_provider == provider
+                and self._cached_model == model
+            ):
                 return self._cached_client
 
-            # Dispose old client if switching providers
+            # Dispose old client if switching providers or model
             if self._cached_client is not None:
-                logger.info("Switching LLM provider from %s to %s", self._cached_provider, provider)
+                logger.info(
+                    "Recreating LLM client (provider: %s→%s, model: %s→%s)",
+                    self._cached_provider, provider, self._cached_model, model,
+                )
                 await self._dispose_client(self._cached_client)
                 self._cached_client = None
                 self._cached_provider = None
+                self._cached_model = None
 
             factory = self._factories.get(provider)
             if factory is None:
@@ -175,7 +194,8 @@ class LLMClientProvider:
 
             self._cached_client = factory(config.llm)
             self._cached_provider = provider
-            logger.info("Initialized LLM provider: %s", provider)
+            self._cached_model = model
+            logger.info("Initialized LLM provider: %s (model: %s)", provider, model or "default")
 
             # Start cleanup task if not running
             if self._cleanup_task is None or self._cleanup_task.done():
@@ -184,33 +204,14 @@ class LLMClientProvider:
             return self._cached_client
 
     async def get_client_for_session(self, session_id: str | None) -> LLMClient:
-        """Return an LLM client scoped to the given session.
+        """Return the shared LLM client.
 
-        For the "claude-persistent" provider, each session gets its own
-        PersistentClaudeClient so multiple sessions can query in parallel.
-        For all other providers, returns the shared client.
+        All sessions share a single persistent process to avoid spawning
+        multiple concurrent ACP subprocesses that compete for API quota.
+        Fresh ACP sessions are created per-query, so there is no context
+        bleed between hook sessions.
         """
-        provider = self._config_manager.get_configuration().llm.provider or "anthropic-api"
-
-        _persistent_providers = {"claude-persistent", "copilot-persistent"}
-
-        if session_id is None or provider not in _persistent_providers:
-            return await self.get_client()
-
-        async with self._session_lock:
-            entry = self._session_clients.get(session_id)
-            if entry is not None:
-                entry.touch()
-                return entry.client
-
-            config = self._config_manager.get_configuration().llm
-            factory = self._factories.get(provider)
-            if factory is None:
-                return await self.get_client()
-            client: LLMClient = factory(config)
-            self._session_clients[session_id] = _SessionClientEntry(client)
-            logger.info("Created per-session persistent %s client for session %s", provider, session_id)
-            return client
+        return await self.get_client()
 
     async def _periodic_cleanup(self) -> None:
         """Periodically clean up idle session clients."""
@@ -264,6 +265,7 @@ class LLMClientProvider:
                 await self._dispose_client(self._cached_client)
                 self._cached_client = None
                 self._cached_provider = None
+                self._cached_model = None
 
         # Close http client if we created it
         if self._http_client is not None:

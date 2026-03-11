@@ -3,11 +3,44 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
+from datetime import datetime
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 import uvicorn
 
 from leash.installer import run_console_installer, should_run_installer
+
+_LOG_DIR = Path.home() / ".leash" / "logs"
+_MAX_BYTES = 1 * 1024 * 1024  # 1 MB per file
+_BACKUP_COUNT = 9  # 9 backups + 1 active = 10 MB max
+
+
+def _setup_file_logging() -> None:
+    """Configure rotating file logging for all leash and uvicorn loggers."""
+    _LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = _LOG_DIR / f"leash_{timestamp}.log"
+
+    handler = RotatingFileHandler(
+        log_file,
+        maxBytes=_MAX_BYTES,
+        backupCount=_BACKUP_COUNT,
+        encoding="utf-8",
+    )
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    ))
+
+    # Attach to root logger so all loggers (leash.*, uvicorn.*) are captured
+    root = logging.getLogger()
+    root.addHandler(handler)
+    root.setLevel(logging.DEBUG)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -38,6 +71,8 @@ def main(argv: list[str] | None = None) -> None:
                 service_url=args.service_url,
             )
         )
+
+    _setup_file_logging()
 
     installer_ran = False
     if should_run_installer(args.config):

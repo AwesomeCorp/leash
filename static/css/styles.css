@@ -112,7 +112,6 @@ body {
     line-height: 1.5;
     transition: background var(--transition), color var(--transition);
     min-height: 100vh;
-    padding-bottom: 80px;
 }
 
 /* ==========================================================================
@@ -195,6 +194,58 @@ header h1 {
 @keyframes pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.6; }
+}
+
+/* Shutdown Button (header) */
+.btn-shutdown {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    padding: 6px 10px;
+    cursor: pointer;
+    color: var(--text-muted);
+    font-size: 16px;
+    line-height: 1;
+    transition: all var(--transition);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.btn-shutdown:hover {
+    background: var(--color-danger);
+    color: white;
+    border-color: var(--color-danger);
+}
+
+.btn-shutdown:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* Auto-Start Button (header) */
+.btn-autostart {
+    background: none;
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 1.1em;
+    padding: 4px 8px;
+    border-radius: 6px;
+    transition: all 0.2s;
+    line-height: 1;
+}
+.btn-autostart:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+.btn-autostart.active {
+    color: var(--color-success, #4caf50);
+    border-color: var(--color-success, #4caf50);
+}
+.btn-autostart:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
 }
 
 /* Dark Mode Toggle */
@@ -1910,14 +1961,6 @@ kbd {
         grid-template-columns: repeat(2, 1fr);
     }
 
-    .quick-actions-bar {
-        flex-wrap: wrap;
-    }
-
-    .qa-btn {
-        font-size: 12px;
-        padding: 8px 12px;
-    }
 }
 
 @media (max-width: 640px) {
@@ -2026,7 +2069,7 @@ kbd {
    Print Styles
    ========================================================================== */
 @media print {
-    .theme-toggle, nav, .toast-container, .modal-overlay, .skip-link, .btn, .quick-actions-bar {
+    .theme-toggle, nav, .toast-container, .modal-overlay, .skip-link, .btn, .btn-shutdown, .btn-autostart {
         display: none !important;
     }
 
@@ -2349,86 +2392,6 @@ kbd {
     border-radius: 3px;
     margin: 2px;
     font-size: 12px;
-}
-
-/* ==========================================================================
-   Quick Actions Bar (Creative)
-   ========================================================================== */
-.quick-actions-bar {
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    background: var(--bg-secondary);
-    border-top: 1px solid var(--border-color);
-    box-shadow: 0 -4px 12px rgba(0,0,0,0.1);
-    display: flex;
-    justify-content: center;
-    gap: 8px;
-    padding: 12px 20px;
-    z-index: 1000;
-}
-
-.qa-btn {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 10px 20px;
-    border: none;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    font-size: 14px;
-    font-weight: 500;
-    transition: all var(--transition);
-    color: white;
-}
-
-.qa-btn:active {
-    transform: scale(0.97);
-}
-
-.qa-icon {
-    font-size: 16px;
-}
-
-.qa-trust {
-    background: var(--color-success);
-}
-
-.qa-trust:hover {
-    opacity: 0.9;
-}
-
-.qa-reset {
-    background: var(--accent-primary);
-}
-
-.qa-reset:hover {
-    opacity: 0.9;
-}
-
-.qa-lockdown {
-    background: var(--color-danger);
-}
-
-.qa-lockdown:hover {
-    opacity: 0.9;
-}
-
-.qa-report {
-    background: #7B1FA2;
-}
-
-.qa-report:hover {
-    background: #6A1B9A;
-}
-
-.qa-shutdown {
-    background: #616161;
-}
-
-.qa-shutdown:hover {
-    background: #424242;
 }
 
 /* ==========================================================================
